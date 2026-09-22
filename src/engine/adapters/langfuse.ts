@@ -6,6 +6,7 @@
 import { AIEvent, NormalizedIngestResult, TelemetrySource } from '../../types/domain';
 import { crossValidateCost } from '../pricing/registry';
 import { computePromptHashSync } from '../privacy/hasher';
+import { sanitizeErrorCode } from './sanitizer';
 
 export interface LangfuseRawRecord {
   id?: string;
@@ -124,6 +125,7 @@ export class LangfuseAdapter {
 
       const isError = rec.level === 'ERROR' || Boolean(rec.statusMessage && rec.statusMessage.toLowerCase().includes('error'));
       const status = isError ? 'ERROR' : 'SUCCESS';
+      const sanitizedErr = isError ? sanitizeErrorCode(rec.statusMessage, rec.level === 'ERROR' ? rec.level : undefined) : undefined;
 
       // Non-reversible prompt hash from input text if string
       let promptHash: string | undefined;
@@ -153,7 +155,7 @@ export class LangfuseAdapter {
         total_tokens: totalTokens,
         latency_ms: latencyMs,
         status,
-        error_code: isError ? (rec.statusMessage || 'ERR_GENERATION') : undefined,
+        error_code: isError ? (sanitizedErr || 'ERR_GENERATION') : undefined,
         trace_id: rec.traceId || `tr_${sourceId}`,
         parent_id: rec.parentObservationId,
         tool_calls: [],

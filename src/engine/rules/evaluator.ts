@@ -26,19 +26,19 @@ export function runOptimizationRules(
   // Only run rules if data health is at least USABLE_WITH_ESTIMATES
   if (health.health_grade !== 'INSUFFICIENT_DATA' && events.length >= 5) {
     // Rule A: Model Right-Sizing
-    const findingA = evaluateModelRightSizing(events, auditId, isSampleData);
+    const findingA = evaluateModelRightSizing(events, auditId, isSampleData, health.time_range);
     if (findingA) {
       findings.push(findingA);
     }
 
     // Rule B: Retry / Error Loop
-    const findingB = evaluateRetryErrorLoop(events, auditId, isSampleData);
+    const findingB = evaluateRetryErrorLoop(events, auditId, isSampleData, health.time_range);
     if (findingB) {
       findings.push(findingB);
     }
 
     // Rule C: Repeated Call Pattern
-    const findingC = evaluateRepeatedCallPattern(events, auditId, isSampleData);
+    const findingC = evaluateRepeatedCallPattern(events, auditId, isSampleData, health.time_range);
     if (findingC) {
       findings.push(findingC);
     }

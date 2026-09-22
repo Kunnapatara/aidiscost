@@ -6,6 +6,7 @@
 import { AIEvent, NormalizedIngestResult, TelemetrySource } from '../../types/domain';
 import { crossValidateCost } from '../pricing/registry';
 import { computePromptHashSync } from '../privacy/hasher';
+import { sanitizeErrorCode } from './sanitizer';
 
 export interface CustomLogRecord {
   id?: string | number;
@@ -131,6 +132,11 @@ export class CustomLogAdapter {
       if (rec.user_id) safeMeta['user_id'] = String(rec.user_id);
       if (rec.environment) safeMeta['environment'] = String(rec.environment);
 
+      let errorCode: string | undefined;
+      if (status !== 'SUCCESS') {
+        errorCode = sanitizeErrorCode(String(rec.error_code || rec.status || ''), rec.error, statusCode) || 'CUSTOM_ERROR';
+      }
+
       events.push({
         id: `evt_custom_${sourceId}`,
         source: 'custom_logs',
@@ -144,7 +150,7 @@ export class CustomLogAdapter {
         total_tokens: totTokens,
         latency_ms: latencyMs,
         status,
-        error_code: rec.error_code || rec.error || (status !== 'SUCCESS' ? 'CUSTOM_ERROR' : undefined),
+        error_code: errorCode,
         trace_id: traceId,
         parent_id: rec.parent_id,
         tool_calls: [],

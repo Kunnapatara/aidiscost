@@ -6,6 +6,7 @@
 import { AIEvent, NormalizedIngestResult, TelemetrySource } from '../../types/domain';
 import { crossValidateCost } from '../pricing/registry';
 import { computePromptHashSync } from '../privacy/hasher';
+import { sanitizeErrorCode } from './sanitizer';
 
 export interface OtelSpan {
   traceId?: string;
@@ -148,7 +149,14 @@ export class OpenTelemetryAdapter {
       }
 
       const isError = span.status?.code === 2;
-      const status: AIEvent['status'] = isError ? 'ERROR' : 'SUCCESS';
+      const httpStatus = attrs['http.status_code'] || attrs['http.response.status_code'];
+      const status: AIEvent['status'] = (Number(httpStatus) === 429)
+        ? 'RATE_LIMITED'
+        : (isError ? 'ERROR' : 'SUCCESS');
+
+      const sanitizedErr = status !== 'SUCCESS'
+        ? (sanitizeErrorCode(span.status?.message, attrs['error.type'], httpStatus as number | string) || 'SPAN_ERROR')
+        : undefined;
 
       const promptHash = attrs['gen_ai.prompt'] ? computePromptHashSync(String(attrs['gen_ai.prompt'])) : undefined;
 
@@ -176,7 +184,7 @@ export class OpenTelemetryAdapter {
         total_tokens: totalTokens,
         latency_ms: Math.max(0, latencyMs),
         status,
-        error_code: isError ? (span.status?.message || 'SPAN_ERROR') : undefined,
+        error_code: sanitizedErr,
         trace_id: span.traceId || `tr_${sourceId}`,
         parent_id: span.parentSpanId,
         tool_calls: [],

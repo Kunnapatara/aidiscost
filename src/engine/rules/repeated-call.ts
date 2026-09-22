@@ -4,11 +4,13 @@
  */
 
 import { AIEvent, Finding } from '../../types/domain';
+import { annualizeSavings, TimeRange } from './annualization';
 
 export function evaluateRepeatedCallPattern(
   events: AIEvent[],
   auditId: string,
-  isSampleData: boolean
+  isSampleData: boolean,
+  timeRange?: TimeRange
 ): Finding | null {
   // Filter for events with prompt_hash and success status
   const validEvents = events.filter(e => e.status === 'SUCCESS' && e.prompt_hash);
@@ -56,8 +58,33 @@ export function evaluateRepeatedCallPattern(
   }
 
   const baselineSpend = redundantSpend + redundantCalls.reduce((s, e) => s + (e.resolved_cost_usd / (sessionPromptGroups.get(`${e.trace_id}:${e.prompt_hash}`)?.length || 1)), 0);
-  const annualized = Number((redundantSpend * 30 * 12).toFixed(2));
+
+  // Annualized projection based strictly on actual observed telemetry window
+  const annualization = annualizeSavings(redundantSpend, timeRange);
+  const annualized = annualization.annualized_usd;
+
   const sampleTraces = Array.from(new Set(redundantCalls.map(e => e.trace_id))).slice(0, 5);
+
+  // Inspect telemetry metadata to truthfully report on temperature
+  const hasExplicitTemp = redundantCalls.some(e => e.metadata?.temperature !== undefined);
+  const verifiedLowTemp = hasExplicitTemp && redundantCalls.every(e => {
+    const t = Number(e.metadata?.temperature);
+    return !isNaN(t) && t <= 0.2;
+  });
+
+  const tempAssumption = verifiedLowTemp
+    ? 'Observed telemetry metadata confirms deterministic request parameters (temperature ≤ 0.2).'
+    : 'Safe caching requires deterministic invocation parameters (such as temperature = 0 or temperature ≤ 0.2); telemetry does not prove invocation temperature, so request parameters must be verified prior to enabling caching.';
+
+  const avgCallsPerCluster = totalClusters > 0 ? ((redundantCalls.length / totalClusters) + 1).toFixed(1) : '1';
+
+  const assumptions = [
+    tempAssumption,
+    'A TTL of 5–15 minutes on application or gateway cache prevents redundant upstream provider billing for identical requests.',
+  ];
+  if (annualization.conservative_assumption) {
+    assumptions.push(annualization.conservative_assumption);
+  }
 
   return {
     id: `fnd_repeated_calls_${auditId.substring(0, 8)}`,
@@ -75,11 +102,8 @@ export function evaluateRepeatedCallPattern(
     potential_savings_pct: Number(((redundantSpend / baselineSpend) * 100).toFixed(1)),
     annualized_projection_usd: annualized,
     eligible_event_count: redundantCalls.length,
-    calculation_method: 'Sum of billed tokens for subsequent identical prompt executions (attempt > 1) within active 15-minute trace contexts.',
-    assumptions: [
-      'Identical prompts executed within the same trace context with deterministic parameters (temp ≤ 0.2) can be safely cached.',
-      'A TTL of 5–15 minutes on application or gateway cache prevents redundant upstream provider billing.',
-    ],
+    calculation_method: `Sum of billed tokens for subsequent identical prompt executions (attempt > 1) within active 15-minute trace contexts. ${annualization.methodology_description}`,
+    assumptions,
     evidence: {
       affected_event_count: redundantCalls.length,
       sample_events: redundantCalls.slice(0, 4).map(e => ({
@@ -94,9 +118,9 @@ export function evaluateRepeatedCallPattern(
       metrics_comparison: [
         {
           label: 'Identical Executions per Trace',
-          current_value: '3 – 5 calls / trace',
+          current_value: `${avgCallsPerCluster} calls / cluster average`,
           target_value: '1 origin call + local cache hit',
-          provenance: 'SOURCE_REPORTED',
+          provenance: 'CALCULATED',
         },
         {
           label: 'Redundant Invocations',

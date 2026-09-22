@@ -4,7 +4,8 @@
  */
 
 import { AIEvent, Finding } from '../../types/domain';
-import { calculateEventCost } from '../pricing/registry';
+import { calculateEventCost, lookupModelPricing } from '../pricing/registry';
+import { annualizeSavings, TimeRange } from './annualization';
 
 interface ModelCandidatePair {
   currentModel: string;
@@ -27,14 +28,14 @@ const RIGHT_SIZING_CANDIDATES: ModelCandidatePair[] = [
     candidateModel: 'gpt-4o-mini',
     maxAvgInputTokens: 500,
     maxAvgOutputTokens: 150,
-    reason: 'Legacy GPT-4 Turbo tier used for basic inference where modern distilled models excel at 94% lower cost.',
+    reason: 'Legacy GPT-4 Turbo tier used for basic inference eligible for modern distilled model evaluation at 94% lower catalog rate.',
   },
   {
     currentModel: 'claude-3-5-sonnet',
     candidateModel: 'claude-3-5-haiku',
     maxAvgInputTokens: 450,
     maxAvgOutputTokens: 120,
-    reason: 'Short prompt classification or extraction task where Claude 3.5 Haiku offers comparable reasoning at 73% lower cost.',
+    reason: 'Short prompt classification or extraction task eligible for evaluation on Claude 3.5 Haiku at 73% lower catalog rate.',
   },
   {
     currentModel: 'gemini-1.5-pro',
@@ -48,7 +49,8 @@ const RIGHT_SIZING_CANDIDATES: ModelCandidatePair[] = [
 export function evaluateModelRightSizing(
   events: AIEvent[],
   auditId: string,
-  isSampleData: boolean
+  isSampleData: boolean,
+  timeRange?: TimeRange
 ): Finding | null {
   // Group events by model
   const modelGroups = new Map<string, AIEvent[]>();
@@ -102,11 +104,28 @@ export function evaluateModelRightSizing(
 
     const savingsPct = Number(((estimatedSavings / baselineSpend) * 100).toFixed(1));
 
-    // Annualized projection based on sample event frequency
-    // (Deterministic formula: baseline savings * 30 days projection factor)
-    const annualized = Number((estimatedSavings * 30 * 12).toFixed(2));
+    // Annualized projection based strictly on observed telemetry duration
+    const annualization = annualizeSavings(estimatedSavings, timeRange);
+    const annualized = annualization.annualized_usd;
 
     const sampleTraces = Array.from(new Set(matchedEvents.map(e => e.trace_id))).slice(0, 5);
+
+    // Derive rates directly from authoritative pricing registry
+    const currentPricing = lookupModelPricing(pair.currentModel);
+    const candidatePricing = lookupModelPricing(pair.candidateModel);
+    const currentInRateStr = currentPricing ? `$${currentPricing.input_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
+    const candidateInRateStr = candidatePricing ? `$${candidatePricing.input_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
+    const currentOutRateStr = currentPricing ? `$${currentPricing.output_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
+    const candidateOutRateStr = candidatePricing ? `$${candidatePricing.output_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
+
+    const assumptions = [
+      `Evaluation opportunity: candidate model ${pair.candidateModel} must be evaluated against task benchmarks to confirm acceptable output quality before migration.`,
+      'Token counts remain consistent with observed production distribution.',
+      'Requires canary benchmark test plan and task output evaluation prior to production migration.',
+    ];
+    if (annualization.conservative_assumption) {
+      assumptions.push(annualization.conservative_assumption);
+    }
 
     return {
       id: `fnd_right_sizing_${pair.currentModel}_${pair.candidateModel}`,
@@ -124,12 +143,8 @@ export function evaluateModelRightSizing(
       potential_savings_pct: savingsPct,
       annualized_projection_usd: annualized,
       eligible_event_count: matchedEvents.length,
-      calculation_method: `Deterministic pricing delta: ${pair.currentModel} published rate vs ${pair.candidateModel} rate applied to observed token distribution.`,
-      assumptions: [
-        `Candidate model ${pair.candidateModel} maintains required evaluation accuracy for observed prompt complexity.`,
-        'Token counts remain consistent with observed production distribution.',
-        'Requires canary benchmark test plan prior to production migration.',
-      ],
+      calculation_method: `Deterministic pricing delta: ${pair.currentModel} catalog rate vs ${pair.candidateModel} rate applied to observed token distribution. ${annualization.methodology_description}`,
+      assumptions,
       evidence: {
         affected_event_count: matchedEvents.length,
         sample_events: matchedEvents.slice(0, 4).map(e => ({
@@ -151,14 +166,14 @@ export function evaluateModelRightSizing(
           },
           {
             label: 'Input Rate ($ / 1M tokens)',
-            current_value: `$2.50`,
-            target_value: `$0.15`,
+            current_value: currentInRateStr,
+            target_value: candidateInRateStr,
             provenance: 'CALCULATED',
           },
           {
             label: 'Output Rate ($ / 1M tokens)',
-            current_value: `$10.00`,
-            target_value: `$0.60`,
+            current_value: currentOutRateStr,
+            target_value: candidateOutRateStr,
             provenance: 'CALCULATED',
           },
           {
@@ -169,7 +184,7 @@ export function evaluateModelRightSizing(
           },
         ],
         trace_samples: sampleTraces,
-        mathematical_proof: `Formula: Sum[ (Input_i * Rate_curr_in + Output_i * Rate_curr_out) - (Input_i * Rate_cand_in + Output_i * Rate_cand_out) ] across ${matchedEvents.length} events = $${estimatedSavings.toFixed(4)} estimated reduction (${savingsPct}%).`,
+        mathematical_proof: `Formula: Sum[ (Input_i * Rate_curr_in + Output_i * Rate_curr_out) - (Input_i * Rate_cand_in + Output_i * Rate_cand_out) ] using registry rates (${pair.currentModel} in: ${currentInRateStr}, out: ${currentOutRateStr} vs ${pair.candidateModel} in: ${candidateInRateStr}, out: ${candidateOutRateStr}) across ${matchedEvents.length} events = $${estimatedSavings.toFixed(4)} estimated reduction (${savingsPct}%).`,
       },
       status: 'DETECTED',
       is_sample_data: isSampleData,

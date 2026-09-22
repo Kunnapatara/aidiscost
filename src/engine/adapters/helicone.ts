@@ -6,6 +6,7 @@
 import { AIEvent, NormalizedIngestResult, TelemetrySource } from '../../types/domain';
 import { crossValidateCost } from '../pricing/registry';
 import { computePromptHashSync } from '../privacy/hasher';
+import { sanitizeErrorCode } from './sanitizer';
 
 export interface HeliconeRawRecord {
   response_id?: string;
@@ -134,7 +135,7 @@ export class HeliconeAdapter {
         total_tokens: totalTokens,
         latency_ms: latencyMs,
         status,
-        error_code: status !== 'SUCCESS' ? `HTTP_${statusCode}` : undefined,
+        error_code: status !== 'SUCCESS' ? (sanitizeErrorCode(undefined, undefined, statusCode) || 'ERR_GENERATION') : undefined,
         trace_id: rec.request_id || `tr_${sourceId}`,
         tool_calls: [],
         prompt_hash: promptHash,
