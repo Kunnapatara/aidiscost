@@ -123,7 +123,14 @@ export class CustomLogAdapter {
         promptHash = computePromptHashSync(rec.prompt);
       }
 
-      const timestamp = rec.timestamp || rec.created_at || rec.time || new Date().toISOString();
+      const rawTs = rec.timestamp || rec.created_at || rec.time;
+      let timestamp = new Date().toISOString();
+      if (rawTs) {
+        const parsedTime = new Date(rawTs).getTime();
+        if (!isNaN(parsedTime)) {
+          timestamp = new Date(parsedTime).toISOString();
+        }
+      }
       const traceId = String(rec.trace_id || rec.session_id || `tr_${sourceId}`);
 
       const costValidation = crossValidateCost(model, inTokens, outTokens, reportedCost);
@@ -141,7 +148,7 @@ export class CustomLogAdapter {
         id: `evt_custom_${sourceId}`,
         source: 'custom_logs',
         source_event_id: sourceId,
-        timestamp: new Date(timestamp).toISOString(),
+        timestamp,
         provider: rec.provider || 'openai',
         model,
         operation: (rec.operation as AIEvent['operation']) || 'chat',

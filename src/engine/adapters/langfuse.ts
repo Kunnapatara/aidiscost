@@ -142,11 +142,19 @@ export class LangfuseAdapter {
 
       const costValidation = crossValidateCost(model, inputTokens, outputTokens, reportedCost);
 
+      let timestamp = new Date().toISOString();
+      if (rec.startTime) {
+        const parsedTime = new Date(rec.startTime).getTime();
+        if (!isNaN(parsedTime)) {
+          timestamp = new Date(parsedTime).toISOString();
+        }
+      }
+
       events.push({
         id: `evt_lf_${sourceId}`,
         source: 'langfuse',
         source_event_id: sourceId,
-        timestamp: rec.startTime ? new Date(rec.startTime).toISOString() : new Date().toISOString(),
+        timestamp,
         provider: rec.modelParameters?.provider ? String(rec.modelParameters.provider) : 'openai',
         model,
         operation: 'chat',

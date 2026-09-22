@@ -122,11 +122,19 @@ export class HeliconeAdapter {
 
       const costValidation = crossValidateCost(model, inputTokens, outputTokens, reportedCost);
 
+      let timestamp = new Date().toISOString();
+      if (rec.request_created_at) {
+        const parsedTime = new Date(rec.request_created_at).getTime();
+        if (!isNaN(parsedTime)) {
+          timestamp = new Date(parsedTime).toISOString();
+        }
+      }
+
       events.push({
         id: `evt_heli_${sourceId}`,
         source: 'helicone',
         source_event_id: sourceId,
-        timestamp: rec.request_created_at ? new Date(rec.request_created_at).toISOString() : new Date().toISOString(),
+        timestamp,
         provider: rec.provider || 'openai',
         model,
         operation: 'chat',

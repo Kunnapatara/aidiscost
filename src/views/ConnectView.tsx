@@ -5,7 +5,8 @@
 
 import React, { useState, useRef } from 'react';
 import { TelemetrySource } from '../types/domain';
-import { Upload, FileText, Database, Shield, Check, AlertTriangle, ArrowRight, Sparkles } from 'lucide-react';
+import { Upload, FileText, Shield, Check, AlertTriangle, ArrowRight, Sparkles, HelpCircle } from 'lucide-react';
+import { detectFormat } from '../engine/ingestion/detector';
 
 interface ConnectViewProps {
   onIngestFile: (fileContent: string, source: TelemetrySource, fileName: string) => void;
@@ -24,6 +25,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [pasteContent, setPasteContent] = useState('');
   const [showPasteBox, setShowPasteBox] = useState(false);
+  const [validationWarning, setValidationWarning] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrag = (e: React.DragEvent) => {
@@ -53,6 +55,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
   };
 
   const processFile = (file: File) => {
+    setValidationWarning(null);
     // Large file check: 15MB threshold for browser-safe memory consumption
     const MAX_SAFE_BYTES = 15 * 1024 * 1024;
     if (file.size > MAX_SAFE_BYTES) {
@@ -66,6 +69,12 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
     reader.onload = (event) => {
       const content = event.target?.result;
       if (typeof content === 'string') {
+        const format = detectFormat(content, file.name);
+        if (format === 'UNSUPPORTED') {
+          setValidationWarning(
+            `"${file.name}" does not appear to be a valid CSV, JSON, JSONL, or NDJSON file. Please check file content.`
+          );
+        }
         onIngestFile(content, selectedSource, file.name);
       }
     };
@@ -74,8 +83,18 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
   const handlePasteSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pasteContent.trim()) return;
-    onIngestFile(pasteContent, selectedSource, 'pasted_telemetry_payload');
+    setValidationWarning(null);
+    const trimmed = pasteContent.trim();
+    if (!trimmed) return;
+
+    const format = detectFormat(trimmed, 'pasted_telemetry');
+    if (format === 'UNSUPPORTED') {
+      setValidationWarning(
+        'Pasted content is not recognized as valid CSV, JSON, JSONL, or NDJSON. Proceeding with custom parser.'
+      );
+    }
+
+    onIngestFile(trimmed, selectedSource, 'pasted_telemetry_payload');
   };
 
   return (
@@ -96,11 +115,22 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
       {/* Error Banner */}
       {error && (
-        <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 flex items-start gap-3">
+        <div id="ingest-error-banner" className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
           <div className="text-xs">
             <span className="font-bold block">Ingestion Error</span>
             <span>{error}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Local Validation Warning Banner */}
+      {validationWarning && (
+        <div id="ingest-validation-warning" className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-xs">
+            <span className="font-bold block">Format Warning</span>
+            <span>{validationWarning}</span>
           </div>
         </div>
       )}
@@ -210,7 +240,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
           ref={fileInputRef}
           type="file"
           id="file-upload-input"
-          accept=".csv,.json,.jsonl,.txt"
+          accept=".csv,.json,.jsonl,.ndjson,.txt"
           onChange={handleFileInput}
           className="hidden"
         />
@@ -223,7 +253,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
           Drop your {selectedSource.replace('_', ' ')} export file here
         </h3>
         <p className="text-xs text-slate-500 max-w-sm mx-auto mb-5 leading-relaxed">
-          Supports CSV with headers, JSON observation arrays, or JSONL streams up to 15MB.
+          Supports CSV (.csv), JSON array (.json), or newline JSON streams (.jsonl, .ndjson) up to 15MB.
           Raw prompts are stripped immediately in memory.
         </p>
 
@@ -251,19 +281,25 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
       {/* Collapsible Direct Paste Box */}
       {showPasteBox && (
-        <form onSubmit={handlePasteSubmit} className="p-4 rounded-xl bg-white border border-slate-200 space-y-3">
-          <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block">
-            Paste JSON, JSONL, or CSV lines directly:
-          </label>
+        <form onSubmit={handlePasteSubmit} className="p-4 rounded-xl bg-white border border-slate-200 space-y-3 shadow-xs">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block">
+              Paste JSON, JSONL, NDJSON, or CSV lines directly:
+            </label>
+            <span className="text-[11px] text-slate-400 font-mono">Max 15MB</span>
+          </div>
           <textarea
             id="input-paste-payload"
             value={pasteContent}
             onChange={(e) => setPasteContent(e.target.value)}
-            rows={5}
+            rows={6}
             placeholder={`{"timestamp": "2026-09-15T12:00:00Z", "model": "gpt-4o", "input_tokens": 140, "output_tokens": 20, "cost": 0.00055, "trace_id": "tr_1"}`}
             className="w-full font-mono text-xs p-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
           />
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-slate-500">
+              Format is auto-detected across CSV, JSON array, JSONL, and NDJSON.
+            </span>
             <button
               type="submit"
               id="btn-submit-pasted"

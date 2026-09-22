@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/test/persistence.test.ts"
+    "test": "node --import tsx --test src/test/*.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

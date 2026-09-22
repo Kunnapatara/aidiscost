@@ -17,6 +17,7 @@ import { LangfuseAdapter } from './engine/adapters/langfuse';
 import { HeliconeAdapter } from './engine/adapters/helicone';
 import { OpenTelemetryAdapter } from './engine/adapters/opentelemetry';
 import { CustomLogAdapter } from './engine/adapters/custom-log';
+import { IngestionPipeline } from './engine/ingestion/pipeline';
 import { generateSampleDataset } from './engine/adapters/sample-data';
 import { evaluateDataHealth } from './engine/health/evaluator';
 import { runOptimizationRules } from './engine/rules/evaluator';
@@ -210,41 +211,22 @@ export default function App() {
 
     setTimeout(() => {
       try {
-        let ingestResult;
-        switch (source) {
-          case 'langfuse': {
-            const adapter = new LangfuseAdapter();
-            ingestResult = adapter.parsePayload(rawContent);
-            break;
-          }
-          case 'helicone': {
-            const adapter = new HeliconeAdapter();
-            ingestResult = adapter.parsePayload(rawContent);
-            break;
-          }
-          case 'opentelemetry': {
-            const adapter = new OpenTelemetryAdapter();
-            ingestResult = adapter.parsePayload(rawContent);
-            break;
-          }
-          case 'custom_logs':
-          default: {
-            const adapter = new CustomLogAdapter();
-            ingestResult = adapter.parsePayload(rawContent);
-            break;
-          }
-        }
+        const pipelineResult = IngestionPipeline.ingest(rawContent, { source, fileName });
 
-        if (ingestResult.events.length === 0 && ingestResult.unparseable_records > 0) {
+        if (!pipelineResult.success) {
           setErrorState({
             isError: true,
             category: 'PARSING_ERROR',
-            message: `Failed to extract valid telemetry events from "${fileName}".`,
-            technicalDetails: ingestResult.warnings.join('\n') || 'Check column headers (model, input_tokens, output_tokens) or JSON schema.',
+            message: pipelineResult.errorMessage || `Failed to extract valid telemetry events from "${fileName}".`,
+            technicalDetails:
+              pipelineResult.warnings.join('\n') ||
+              'Check column headers (model, input_tokens, output_tokens) or JSON schema.',
           });
           setIsLoading(false);
           return;
         }
+
+        const ingestResult = pipelineResult.ingestResult;
 
         // Run Data Health Gate
         const health = evaluateDataHealth(
@@ -255,7 +237,7 @@ export default function App() {
         );
 
         // Run Deterministic Rules
-        const audit = runOptimizationRules(ingestResult.events, source, health, false);
+        const audit = runOptimizationRules(ingestResult.events, ingestResult.source, health, false);
 
         // Initialize Fix Packages and Verification states
         const fixMap = new Map<string, FixPackage>();
@@ -268,7 +250,7 @@ export default function App() {
           verifyMap.set(fnd.id, initializeVerificationState(fnd));
         }
 
-        setActiveSource(source);
+        setActiveSource(ingestResult.source);
         setCurrentEvents(ingestResult.events);
         setHealthReport(health);
         setAuditSummary(audit);
@@ -286,7 +268,7 @@ export default function App() {
           activeFindingId: audit.findings[0]?.id,
           currentRoute: '/audit/health',
           isSampleData: false,
-          source: source,
+          source: ingestResult.source,
         });
 
         // Step 2 in workflow: Always show Data Health first
