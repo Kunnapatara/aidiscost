@@ -10,11 +10,14 @@ interface LandingViewProps {
   onStartAudit: () => void;
   onLoadSample: () => void;
   onNavigate: (route: string) => void;
+  hasActiveAudit?: boolean;
 }
 
 export const LandingView: React.FC<LandingViewProps> = ({
   onStartAudit,
   onLoadSample,
+  onNavigate,
+  hasActiveAudit = false,
 }) => {
   return (
     <div className="space-y-12 sm:space-y-16 pb-16">
@@ -37,15 +40,27 @@ export const LandingView: React.FC<LandingViewProps> = ({
 
         {/* Primary CTAs */}
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-md mx-auto">
-          <button
-            type="button"
-            id="btn-hero-start-audit"
-            onClick={onStartAudit}
-            className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800 transition-all shadow-sm flex items-center justify-center gap-2 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
-          >
-            <span>Start Free Audit</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          {hasActiveAudit ? (
+            <button
+              type="button"
+              id="btn-hero-resume-audit"
+              onClick={() => onNavigate('/audit')}
+              className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-emerald-600 text-white font-bold text-sm hover:bg-emerald-700 transition-all shadow-sm flex items-center justify-center gap-2 focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
+            >
+              <span>Resume Active Audit</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              id="btn-hero-start-audit"
+              onClick={onStartAudit}
+              className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800 transition-all shadow-sm flex items-center justify-center gap-2 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
+            >
+              <span>Start Free Audit</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
 
           <button
             type="button"

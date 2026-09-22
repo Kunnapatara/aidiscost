@@ -23,6 +23,7 @@ import { runOptimizationRules } from './engine/rules/evaluator';
 import { generateFixPackage } from './engine/fix/generator';
 import { initializeVerificationState, evaluateVerification } from './engine/verification/comparator';
 import { BillingEntitlementStore } from './engine/billing/entitlement';
+import { AuditStore } from './engine/storage/audit-store';
 import { HeaderNav } from './components/HeaderNav';
 import { LandingView } from './views/LandingView';
 import { ConnectView } from './views/ConnectView';
@@ -72,23 +73,124 @@ export default function App() {
     message: '',
   });
 
-  // Handle URL hash / initial load if needed
+  // Handle URL hash / initial load and restore durable audit snapshot
   useEffect(() => {
+    let isMounted = true;
+
     const handlePopState = () => {
       const hash = window.location.hash.replace('#', '') || '/';
       parseAndSetRoute(hash);
     };
     window.addEventListener('popstate', handlePopState);
-    if (window.location.hash) {
-      handlePopState();
-    }
-    return () => window.removeEventListener('popstate', handlePopState);
+
+    // Hydrate latest audit snapshot from local IndexedDB
+    AuditStore.loadLatestAuditSnapshot()
+      .then((snapshot) => {
+        if (!isMounted || !snapshot) {
+          if (window.location.hash) {
+            handlePopState();
+          }
+          return;
+        }
+
+        // Restore audit domain state
+        setActiveSource(snapshot.source);
+        setHealthReport(snapshot.health);
+        setAuditSummary(snapshot.audit_summary);
+        setIsSampleData(Boolean(snapshot.is_sample_data));
+
+        if (snapshot.active_finding_id) {
+          setActiveFindingId(snapshot.active_finding_id);
+        }
+
+        // Restore Maps
+        const restoredFixMap = new Map<string, FixPackage>(
+          Object.entries(snapshot.fix_packages || {})
+        );
+        const restoredVerifyMap = new Map<string, VerificationState>(
+          Object.entries(snapshot.verification_states || {})
+        );
+        setFixPackages(restoredFixMap);
+        setVerificationStates(restoredVerifyMap);
+
+        // Determine destination route
+        const currentHash = window.location.hash.replace('#', '');
+        if (currentHash && currentHash !== '/') {
+          parseAndSetRoute(currentHash);
+        } else if (snapshot.current_route && snapshot.current_route !== '/') {
+          navigateTo(snapshot.current_route);
+        } else {
+          // If at root but audit restored, route to audit summary
+          navigateTo('/audit');
+        }
+      })
+      .catch((err) => {
+        console.warn('[AuditStore] Hydration notice:', (err as Error).message);
+        if (window.location.hash) {
+          handlePopState();
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
+
+  const persistCurrentSnapshot = (overrides?: {
+    auditSummary?: AuditSummary | null;
+    healthReport?: DataHealthReport | null;
+    fixPackages?: Map<string, FixPackage>;
+    verificationStates?: Map<string, VerificationState>;
+    activeFindingId?: string;
+    currentRoute?: string;
+    isSampleData?: boolean;
+    source?: TelemetrySource;
+  }) => {
+    const summary = overrides?.auditSummary !== undefined ? overrides.auditSummary : auditSummary;
+    const health = overrides?.healthReport !== undefined ? overrides.healthReport : healthReport;
+    const fixMap = overrides?.fixPackages !== undefined ? overrides.fixPackages : fixPackages;
+    const verifyMap = overrides?.verificationStates !== undefined ? overrides.verificationStates : verificationStates;
+    const fndId = overrides?.activeFindingId !== undefined ? overrides.activeFindingId : activeFindingId;
+    const route = overrides?.currentRoute !== undefined ? overrides.currentRoute : currentRoute;
+
+    if (!summary || !health) return;
+
+    try {
+      const snapshot = AuditStore.buildSnapshot({
+        auditSummary: summary,
+        healthReport: health,
+        findings: summary.findings,
+        fixPackages: fixMap,
+        verificationStates: verifyMap,
+        activeFindingId: fndId,
+        currentRoute: route,
+      });
+
+      if (overrides?.isSampleData !== undefined) {
+        snapshot.is_sample_data = overrides.isSampleData;
+      }
+      if (overrides?.source !== undefined) {
+        snapshot.source = overrides.source;
+      }
+
+      AuditStore.saveAuditSnapshot(snapshot).catch((err) => {
+        console.warn('[AuditStore] Non-blocking snapshot save warning:', (err as Error).message);
+      });
+    } catch (err) {
+      console.warn('[AuditStore] Non-blocking snapshot build warning:', (err as Error).message);
+    }
+  };
 
   const navigateTo = (route: string) => {
     setCurrentRoute(route);
     window.location.hash = route;
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Update persisted route in active audit snapshot
+    if (auditSummary && healthReport) {
+      persistCurrentSnapshot({ currentRoute: route });
+    }
   };
 
   const parseAndSetRoute = (route: string) => {
@@ -175,6 +277,18 @@ export default function App() {
         setIsSampleData(false);
         setIsLoading(false);
 
+        // Durable persistence: save canonical snapshot immediately after audit creation
+        persistCurrentSnapshot({
+          auditSummary: audit,
+          healthReport: health,
+          fixPackages: fixMap,
+          verificationStates: verifyMap,
+          activeFindingId: audit.findings[0]?.id,
+          currentRoute: '/audit/health',
+          isSampleData: false,
+          source: source,
+        });
+
         // Step 2 in workflow: Always show Data Health first
         navigateTo('/audit/health');
       } catch (err) {
@@ -216,6 +330,18 @@ export default function App() {
       setIsSampleData(true);
       setIsLoading(false);
 
+      // Durable persistence: save sample dataset audit snapshot
+      persistCurrentSnapshot({
+        auditSummary: audit,
+        healthReport: health,
+        fixPackages: fixMap,
+        verificationStates: verifyMap,
+        activeFindingId: audit.findings[0]?.id,
+        currentRoute: '/audit/health',
+        isSampleData: true,
+        source: 'custom_logs',
+      });
+
       navigateTo('/audit/health');
     }, 150);
   };
@@ -223,6 +349,9 @@ export default function App() {
   // Handle Finding Selection
   const handleSelectFinding = (findingId: string) => {
     setActiveFindingId(findingId);
+    if (auditSummary && healthReport) {
+      persistCurrentSnapshot({ activeFindingId: findingId, currentRoute: `/finding/${findingId}` });
+    }
     navigateTo(`/finding/${findingId}`);
   };
 
@@ -242,6 +371,7 @@ export default function App() {
           unlocked_at: new Date().toISOString(),
         });
       }
+      persistCurrentSnapshot({ fixPackages: updated });
       return updated;
     });
 
@@ -278,6 +408,7 @@ export default function App() {
           },
         });
       }
+      persistCurrentSnapshot({ verificationStates: updated });
       return updated;
     });
   };
@@ -329,6 +460,7 @@ export default function App() {
     setVerificationStates((prev) => {
       const updated = new Map(prev);
       updated.set(findingId, newVerifyState);
+      persistCurrentSnapshot({ verificationStates: updated });
       return updated;
     });
   };
@@ -374,6 +506,7 @@ export default function App() {
                 onStartAudit={() => navigateTo('/connect')}
                 onLoadSample={handleLoadSampleDataset}
                 onNavigate={navigateTo}
+                hasActiveAudit={auditSummary !== null}
               />
             )}
 
