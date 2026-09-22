@@ -8,12 +8,10 @@ import {
   CostProvenance,
   DataHealthReport,
   FindingStatus,
-  FixPackage,
   HealthGrade,
   RuleType,
   TelemetrySource,
   VerificationStage,
-  VerificationState,
 } from '../../types/domain';
 
 export const AUDIT_SNAPSHOT_SCHEMA_VERSION = 1;
@@ -95,6 +93,64 @@ export interface PersistedFinding {
 }
 
 /**
+ * Persistence-safe Fix Package representation
+ * Privacy invariant: Raw payloads, arbitrary metadata, user prompts, tokens,
+ * credentials, and provider responses are NEVER stored.
+ */
+export interface PersistedFixPackage {
+  finding_id: string;
+  unlocked: boolean;
+  unlocked_at?: string;
+  purchase_id?: string;
+  root_cause_hypothesis: string;
+  recommended_approach: string;
+  expected_impact: {
+    monthly_savings_usd: number;
+    latency_delta_ms: number;
+    quality_risk: 'NEGLIGIBLE' | 'LOW' | 'MEDIUM' | 'REQUIRES_BENCHMARK';
+  };
+  test_plan: {
+    sample_size: number;
+    evaluation_criteria: string;
+    traffic_allocation_pct: number;
+    test_harness_instructions: string;
+  };
+  acceptance_criteria: string[];
+  verification_instructions: string;
+  rollback_plan: string;
+}
+
+/**
+ * Persistence-safe Verification State representation
+ * Privacy invariant: Raw responses, event payloads, arbitrary metadata, tokens,
+ * and credentials are NEVER stored.
+ */
+export interface PersistedVerificationState {
+  finding_id: string;
+  stage: VerificationStage;
+  baseline_window: {
+    start: string;
+    end: string;
+    avg_cost_per_call_usd: number;
+    sample_count: number;
+  };
+  deployment_timestamp?: string;
+  observation_window?: {
+    start: string;
+    end: string;
+    sample_event_count: number;
+  };
+  observed_result?: {
+    pre_cost_per_call_usd: number;
+    post_cost_per_call_usd: number;
+    observed_reduction_pct: number;
+    annualized_realized_savings_usd: number;
+    verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
+    verification_notes: string;
+  };
+}
+
+/**
  * Persistence-safe Audit Summary representation
  */
 export interface PersistedAuditSummary {
@@ -125,8 +181,8 @@ export interface PersistedAuditSnapshot {
   health: DataHealthReport;
   audit_summary: PersistedAuditSummary;
   findings: PersistedFinding[];
-  fix_packages: Record<string, FixPackage>;
-  verification_states: Record<string, VerificationState>;
+  fix_packages: Record<string, PersistedFixPackage>;
+  verification_states: Record<string, PersistedVerificationState>;
 
   active_finding_id?: string;
   current_route?: string;

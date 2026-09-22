@@ -18,6 +18,8 @@ import {
   PersistedEventSample,
   PersistedFinding,
   PersistedFindingEvidence,
+  PersistedFixPackage,
+  PersistedVerificationState,
 } from './types';
 
 const DB_NAME = 'aidiscost_local_db';
@@ -62,19 +64,29 @@ const DISALLOWED_KEYS = new Set<string>([
   'completion',
   'raw_prompt',
   'raw_completion',
+  'request',
+  'response',
   'request_body',
   'response_body',
   'raw_payload',
   'payload',
+  'body',
+  'content',
+  'metadata',
   'stack',
   'stack_trace',
   'exception',
+  'error_object',
   'error_message',
   'provider_response',
-  'api_key',
+  'headers',
   'authorization',
+  'api_key',
+  'token',
   'cookie',
-  'metadata', // arbitrary user text dictionary
+  'secret',
+  'credential',
+  'credentials',
 ]);
 
 export class AuditStore {
@@ -196,6 +208,91 @@ export class AuditStore {
   }
 
   /**
+   * Sanitizes a runtime FixPackage into an allowlisted PersistedFixPackage DTO.
+   * Strips raw_payload, metadata, prompt, completion, tokens, and arbitrary user objects.
+   */
+  static sanitizeFixPackage(pkg: FixPackage): PersistedFixPackage {
+    const raw = pkg as unknown as Record<string, unknown>;
+    const rawImpact = (raw.expected_impact || {}) as Record<string, unknown>;
+    const rawTestPlan = (raw.test_plan || {}) as Record<string, unknown>;
+
+    return {
+      finding_id: String(raw.finding_id || ''),
+      unlocked: Boolean(raw.unlocked),
+      unlocked_at: raw.unlocked_at ? String(raw.unlocked_at) : undefined,
+      purchase_id: raw.purchase_id ? String(raw.purchase_id) : undefined,
+      root_cause_hypothesis: String(raw.root_cause_hypothesis || ''),
+      recommended_approach: String(raw.recommended_approach || ''),
+      expected_impact: {
+        monthly_savings_usd: Number(rawImpact.monthly_savings_usd) || 0,
+        latency_delta_ms: Number(rawImpact.latency_delta_ms) || 0,
+        quality_risk: (['NEGLIGIBLE', 'LOW', 'MEDIUM', 'REQUIRES_BENCHMARK'].includes(rawImpact.quality_risk as string)
+          ? rawImpact.quality_risk
+          : 'LOW') as 'NEGLIGIBLE' | 'LOW' | 'MEDIUM' | 'REQUIRES_BENCHMARK',
+      },
+      test_plan: {
+        sample_size: Number(rawTestPlan.sample_size) || 0,
+        evaluation_criteria: String(rawTestPlan.evaluation_criteria || ''),
+        traffic_allocation_pct: Number(rawTestPlan.traffic_allocation_pct) || 0,
+        test_harness_instructions: String(rawTestPlan.test_harness_instructions || ''),
+      },
+      acceptance_criteria: Array.isArray(raw.acceptance_criteria)
+        ? raw.acceptance_criteria.map(c => String(c))
+        : [],
+      verification_instructions: String(raw.verification_instructions || ''),
+      rollback_plan: String(raw.rollback_plan || ''),
+    };
+  }
+
+  /**
+   * Sanitizes a runtime VerificationState into an allowlisted PersistedVerificationState DTO.
+   * Strips raw_response, metadata, headers, tokens, and arbitrary runtime objects.
+   */
+  static sanitizeVerificationState(state: VerificationState): PersistedVerificationState {
+    const raw = state as unknown as Record<string, unknown>;
+    const rawBase = (raw.baseline_window || {}) as Record<string, unknown>;
+    const rawObsWindow = raw.observation_window as Record<string, unknown> | undefined;
+    const rawResult = raw.observed_result as Record<string, unknown> | undefined;
+
+    const clean: PersistedVerificationState = {
+      finding_id: String(raw.finding_id || ''),
+      stage: (['BASELINE', 'CUSTOMER_DEPLOYED', 'OBSERVATION_ACTIVE', 'VERIFIED_RESULT'].includes(raw.stage as string)
+        ? raw.stage
+        : 'BASELINE') as VerificationState['stage'],
+      baseline_window: {
+        start: String(rawBase.start || ''),
+        end: String(rawBase.end || ''),
+        avg_cost_per_call_usd: Number(rawBase.avg_cost_per_call_usd) || 0,
+        sample_count: Number(rawBase.sample_count) || 0,
+      },
+      deployment_timestamp: raw.deployment_timestamp ? String(raw.deployment_timestamp) : undefined,
+    };
+
+    if (rawObsWindow && typeof rawObsWindow === 'object') {
+      clean.observation_window = {
+        start: String(rawObsWindow.start || ''),
+        end: String(rawObsWindow.end || ''),
+        sample_event_count: Number(rawObsWindow.sample_event_count) || 0,
+      };
+    }
+
+    if (rawResult && typeof rawResult === 'object') {
+      clean.observed_result = {
+        pre_cost_per_call_usd: Number(rawResult.pre_cost_per_call_usd) || 0,
+        post_cost_per_call_usd: Number(rawResult.post_cost_per_call_usd) || 0,
+        observed_reduction_pct: Number(rawResult.observed_reduction_pct) || 0,
+        annualized_realized_savings_usd: Number(rawResult.annualized_realized_savings_usd) || 0,
+        verification_confidence: (['HIGH', 'MEDIUM', 'INSUFFICIENT_OBSERVATION'].includes(rawResult.verification_confidence as string)
+          ? rawResult.verification_confidence
+          : 'MEDIUM') as 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION',
+        verification_notes: String(rawResult.verification_notes || ''),
+      };
+    }
+
+    return clean;
+  }
+
+  /**
    * Builds a canonical, privacy-safe PersistedAuditSnapshot from current runtime state
    */
   static buildSnapshot(params: {
@@ -209,11 +306,25 @@ export class AuditStore {
   }): PersistedAuditSnapshot {
     const { auditSummary, healthReport, findings, fixPackages, verificationStates, activeFindingId, currentRoute } = params;
 
-    const fixPackagesRecord: Record<string, FixPackage> =
+    // Convert and sanitize fix packages through allowlist DTO
+    const rawFixPackages: Record<string, FixPackage> =
       fixPackages instanceof Map ? Object.fromEntries(fixPackages.entries()) : { ...fixPackages };
+    const persistedFixPackages: Record<string, PersistedFixPackage> = {};
+    for (const [id, pkg] of Object.entries(rawFixPackages)) {
+      if (pkg && typeof pkg === 'object') {
+        persistedFixPackages[id] = this.sanitizeFixPackage(pkg);
+      }
+    }
 
-    const verificationStatesRecord: Record<string, VerificationState> =
+    // Convert and sanitize verification states through allowlist DTO
+    const rawVerificationStates: Record<string, VerificationState> =
       verificationStates instanceof Map ? Object.fromEntries(verificationStates.entries()) : { ...verificationStates };
+    const persistedVerificationStates: Record<string, PersistedVerificationState> = {};
+    for (const [id, state] of Object.entries(rawVerificationStates)) {
+      if (state && typeof state === 'object') {
+        persistedVerificationStates[id] = this.sanitizeVerificationState(state);
+      }
+    }
 
     const runtimeFindings = findings || auditSummary.findings || [];
     const persistedFindings = runtimeFindings.map(f => this.sanitizeFinding(f));
@@ -239,8 +350,8 @@ export class AuditStore {
       health: healthReport,
       audit_summary: persistedSummary,
       findings: persistedFindings,
-      fix_packages: fixPackagesRecord,
-      verification_states: verificationStatesRecord,
+      fix_packages: persistedFixPackages,
+      verification_states: persistedVerificationStates,
       active_finding_id: activeFindingId,
       current_route: currentRoute,
     };
@@ -338,7 +449,40 @@ export class AuditStore {
       }
     }
 
-    // Privacy boundary deep scan: reject any snapshot containing disallowed keys
+    // Check fix_packages integrity
+    for (const [findingId, pkg] of Object.entries(s.fix_packages)) {
+      if (
+        !pkg ||
+        typeof pkg !== 'object' ||
+        typeof pkg.finding_id !== 'string' ||
+        typeof pkg.unlocked !== 'boolean' ||
+        typeof pkg.root_cause_hypothesis !== 'string' ||
+        typeof pkg.recommended_approach !== 'string' ||
+        !pkg.expected_impact ||
+        typeof pkg.expected_impact !== 'object' ||
+        !pkg.test_plan ||
+        typeof pkg.test_plan !== 'object' ||
+        !Array.isArray(pkg.acceptance_criteria)
+      ) {
+        return false;
+      }
+    }
+
+    // Check verification_states integrity
+    for (const [findingId, state] of Object.entries(s.verification_states)) {
+      if (
+        !state ||
+        typeof state !== 'object' ||
+        typeof state.finding_id !== 'string' ||
+        typeof state.stage !== 'string' ||
+        !state.baseline_window ||
+        typeof state.baseline_window !== 'object'
+      ) {
+        return false;
+      }
+    }
+
+    // Privacy boundary deep scan: reject any snapshot containing disallowed keys anywhere
     if (this.containsDisallowedKeys(s)) {
       return false;
     }
@@ -368,7 +512,10 @@ export class AuditStore {
           console.warn('[AuditStore] Failed to write audit snapshot to IndexedDB');
           resolve(false);
         };
-        tx.onabort = () => resolve(false);
+        tx.onerror = () => {
+          console.warn('[AuditStore] Transaction error writing snapshot');
+          resolve(false);
+        };
       });
     } catch (err) {
       console.warn('[AuditStore] Storage save error:', (err as Error).message);
@@ -377,12 +524,10 @@ export class AuditStore {
   }
 
   /**
-   * Loads a specific audit snapshot by audit_id.
-   * Returns null if not found, corrupt, or unsupported schema version.
+   * Loads an audit snapshot by ID from IndexedDB.
+   * Corrupt or invalid records are caught safely and return null.
    */
   static async loadAuditSnapshot(auditId: string): Promise<PersistedAuditSnapshot | null> {
-    if (!auditId) return null;
-
     try {
       const db = await this.getDB();
       return new Promise<PersistedAuditSnapshot | null>((resolve) => {
@@ -391,23 +536,33 @@ export class AuditStore {
         const req = store.get(auditId);
 
         req.onsuccess = () => {
-          const val = req.result;
-          if (AuditStore.validateSnapshot(val)) {
-            resolve(val);
+          const record = req.result;
+          if (!record) {
+            resolve(null);
+            return;
+          }
+
+          if (this.validateSnapshot(record)) {
+            resolve(record);
           } else {
+            console.warn(`[AuditStore] Snapshot ${auditId} failed validation; returning null`);
             resolve(null);
           }
         };
-        req.onerror = () => resolve(null);
+
+        req.onerror = () => {
+          console.warn(`[AuditStore] Error reading audit ${auditId}`);
+          resolve(null);
+        };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[AuditStore] Storage load error:', (err as Error).message);
       return null;
     }
   }
 
   /**
-   * Loads the latest valid audit snapshot ordered by created_at.
-   * Returns null if empty or if no valid records exist.
+   * Loads the most recently created valid audit snapshot.
    */
   static async loadLatestAuditSnapshot(): Promise<PersistedAuditSnapshot | null> {
     try {
@@ -415,45 +570,41 @@ export class AuditStore {
       return new Promise<PersistedAuditSnapshot | null>((resolve) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
         const store = tx.objectStore(STORE_NAME);
-        const req = store.getAll();
 
-        req.onsuccess = () => {
-          const results = req.result;
-          if (!Array.isArray(results) || results.length === 0) {
+        const allReq = store.getAll();
+        allReq.onsuccess = () => {
+          const records: unknown[] = allReq.result || [];
+          const validRecords = records.filter((r): r is PersistedAuditSnapshot => this.validateSnapshot(r));
+
+          if (validRecords.length === 0) {
             resolve(null);
             return;
           }
 
-          // Filter valid snapshots and sort descending by created_at
-          const valid = results.filter((item): item is PersistedAuditSnapshot =>
-            AuditStore.validateSnapshot(item)
-          );
+          validRecords.sort((a, b) => {
+            const timeA = new Date(a.created_at).getTime();
+            const timeB = new Date(b.created_at).getTime();
+            return timeB - timeA;
+          });
 
-          if (valid.length === 0) {
-            resolve(null);
-            return;
-          }
-
-          valid.sort(
-            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-          );
-
-          resolve(valid[0]);
+          resolve(validRecords[0]);
         };
 
-        req.onerror = () => resolve(null);
+        allReq.onerror = () => {
+          console.warn('[AuditStore] Error loading all snapshots');
+          resolve(null);
+        };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[AuditStore] Storage load latest error:', (err as Error).message);
       return null;
     }
   }
 
   /**
-   * Deletes a specific audit snapshot by audit_id.
+   * Deletes an audit snapshot by ID.
    */
   static async deleteAuditSnapshot(auditId: string): Promise<boolean> {
-    if (!auditId) return false;
-
     try {
       const db = await this.getDB();
       return new Promise<boolean>((resolve) => {
@@ -470,9 +621,9 @@ export class AuditStore {
   }
 
   /**
-   * Clears all persisted audit snapshots.
+   * Clears all persisted snapshots (useful for tests or full data reset).
    */
-  static async clearAuditSnapshots(): Promise<boolean> {
+  static async clearAll(): Promise<boolean> {
     try {
       const db = await this.getDB();
       return new Promise<boolean>((resolve) => {
@@ -487,4 +638,12 @@ export class AuditStore {
       return false;
     }
   }
+
+  /**
+   * Clears all persisted audit snapshots (alias for clearAll).
+   */
+  static async clearAuditSnapshots(): Promise<boolean> {
+    return this.clearAll();
+  }
 }
+

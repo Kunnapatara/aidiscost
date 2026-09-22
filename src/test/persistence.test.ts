@@ -146,6 +146,7 @@ function createSampleVerificationState(findingId: string): VerificationState {
 describe('AuditStore — Durable Local Audit Persistence Tests', () => {
   beforeEach(() => {
     setupTestEnvironment();
+    (AuditStore as any).dbPromise = null;
   });
 
   test('Test A — Save / Load Round Trip preserves all canonical audit fields', async () => {
@@ -657,4 +658,279 @@ describe('AuditStore — Durable Local Audit Persistence Tests', () => {
     }
     assert.strictEqual(latestResult, null, 'Load latest failure must return null safely');
   });
+
+  test('Test H: FixPackage Privacy Isolation (Strips raw payloads, prompts, tokens, credentials)', async () => {
+    const auditId = 'audit_fixpkg_privacy_test';
+    const finding = createSampleFinding(auditId, '1');
+    const health = createSampleHealthReport();
+    const summary: AuditSummary = {
+      id: auditId,
+      created_at: '2026-09-02T16:00:00Z',
+      source: 'opentelemetry',
+      total_spend_usd: 120.0,
+      potential_savings_usd: 40.0,
+      annualized_savings_projection_usd: 14600.0,
+      health,
+      findings: [finding],
+      is_sample_data: false,
+    };
+
+    // Construct a FixPackage that simulates a runtime object contaminated with sensitive/raw fields
+    const contaminatedFixPackage: any = {
+      finding_id: finding.id,
+      unlocked: true,
+      unlocked_at: '2026-09-02T16:05:00Z',
+      purchase_id: 'purch_test_123',
+      root_cause_hypothesis: 'Excessive prompt tokens from uncompressed system message',
+      recommended_approach: 'Compress system prompt template and cache prefixes',
+      expected_impact: {
+        monthly_savings_usd: 40.0,
+        latency_delta_ms: -150,
+        quality_risk: 'LOW',
+        // Injected raw properties
+        raw_prompt: 'SYSTEM: You are a super confidential banking bot...',
+        internal_api_key: 'sk-proj-supersecret123456789',
+      },
+      test_plan: {
+        sample_size: 50,
+        evaluation_criteria: 'Verify token reduction while semantic output remains identical',
+        traffic_allocation_pct: 10,
+        test_harness_instructions: 'Run shadow traffic through new prompt template',
+        // Injected raw payload
+        raw_payload: { prompt: 'Secret payload content', token: 'bearer-token-abc' },
+      },
+      acceptance_criteria: [
+        'Prompt token count reduced by >= 30%',
+        'Evaluation pass rate >= 98%',
+      ],
+      verification_instructions: 'Compare pre/post token distributions in baseline window',
+      rollback_plan: 'Revert prompt template commit and invalidate edge cache',
+      // Injected top-level disallowed keys
+      prompt: 'RAW PROMPT TEXT THAT MUST NEVER BE STORED',
+      completion: 'RAW COMPLETION TEXT THAT MUST NEVER BE STORED',
+      metadata: { customer_email: 'ceo@confidential.com', api_key: 'secret_key_123' },
+      secret: 'super_secret_token',
+      credentials: { token: 'jwt.token.here' },
+      headers: { Authorization: 'Bearer test' },
+    };
+
+    // Build snapshot through AuditStore
+    const snapshot = AuditStore.buildSnapshot({
+      auditSummary: summary,
+      healthReport: health,
+      findings: [finding],
+      fixPackages: { [finding.id]: contaminatedFixPackage },
+      verificationStates: {},
+    });
+
+    // 1. Verify buildSnapshot mapped to PersistedFixPackage DTO without leaky fields
+    const persistedPkg = snapshot.fix_packages[finding.id];
+    assert.ok(persistedPkg, 'Persisted fix package should exist');
+    assert.strictEqual(persistedPkg.finding_id, finding.id);
+    assert.strictEqual(persistedPkg.unlocked, true);
+    assert.strictEqual(persistedPkg.root_cause_hypothesis, 'Excessive prompt tokens from uncompressed system message');
+    assert.strictEqual(persistedPkg.expected_impact.monthly_savings_usd, 40.0);
+    assert.strictEqual(persistedPkg.test_plan.sample_size, 50);
+
+    // 2. Invariant verification: No disallowed keys in serialized snapshot
+    const serialized = JSON.stringify(snapshot);
+    assert.strictEqual(serialized.includes('RAW PROMPT TEXT'), false, 'Must not contain raw prompt text');
+    assert.strictEqual(serialized.includes('RAW COMPLETION TEXT'), false, 'Must not contain raw completion text');
+    assert.strictEqual(serialized.includes('sk-proj-supersecret'), false, 'Must not contain api key');
+    assert.strictEqual(serialized.includes('ceo@confidential.com'), false, 'Must not contain metadata email');
+    assert.strictEqual(serialized.includes('jwt.token.here'), false, 'Must not contain credentials token');
+
+    // 3. Validation and save round-trip integrity
+    const isValid = AuditStore.validateSnapshot(snapshot);
+    assert.strictEqual(isValid, true, 'Sanitized snapshot must pass validation');
+
+    const saveSuccess = await AuditStore.saveAuditSnapshot(snapshot);
+    assert.strictEqual(saveSuccess, true, 'Save should succeed');
+
+    const loaded = await AuditStore.loadAuditSnapshot(auditId);
+    assert.ok(loaded, 'Loaded snapshot should exist');
+    const loadedPkg = loaded!.fix_packages[finding.id];
+    assert.ok(loadedPkg, 'Loaded fix package should exist');
+    assert.strictEqual((loadedPkg as any).prompt, undefined, 'Loaded package must not have prompt');
+    assert.strictEqual((loadedPkg as any).metadata, undefined, 'Loaded package must not have metadata');
+    assert.strictEqual((loadedPkg as any).raw_payload, undefined, 'Loaded package must not have raw_payload');
+  });
+
+  test('Test I: VerificationState Privacy Isolation (Strips responses, payloads, tokens, headers)', async () => {
+    const auditId = 'audit_verification_privacy_test';
+    const finding = createSampleFinding(auditId, '1');
+    const health = createSampleHealthReport();
+    const summary: AuditSummary = {
+      id: auditId,
+      created_at: '2026-09-02T17:00:00Z',
+      source: 'helicone',
+      total_spend_usd: 80.0,
+      potential_savings_usd: 25.0,
+      annualized_savings_projection_usd: 9125.0,
+      health,
+      findings: [finding],
+      is_sample_data: false,
+    };
+
+    // Construct a VerificationState contaminated with runtime payloads, headers, tokens
+    const contaminatedVerificationState: any = {
+      finding_id: finding.id,
+      stage: 'VERIFIED_RESULT',
+      baseline_window: {
+        start: '2026-09-01T00:00:00Z',
+        end: '2026-09-01T12:00:00Z',
+        avg_cost_per_call_usd: 0.0085,
+        sample_count: 500,
+        // Injected raw responses
+        response: { body: 'raw response data from provider' },
+      },
+      deployment_timestamp: '2026-09-01T13:00:00Z',
+      observation_window: {
+        start: '2026-09-01T13:00:00Z',
+        end: '2026-09-02T01:00:00Z',
+        sample_event_count: 520,
+        // Injected request/response payload
+        request: { headers: { Authorization: 'Bearer leak123' } },
+      },
+      observed_result: {
+        pre_cost_per_call_usd: 0.0085,
+        post_cost_per_call_usd: 0.0051,
+        observed_reduction_pct: 40.0,
+        annualized_realized_savings_usd: 9125.0,
+        verification_confidence: 'HIGH',
+        verification_notes: 'Consistent 40% cost reduction observed across 520 calls',
+        // Injected raw completions & stack traces
+        completion: 'Completed with token payload abc',
+        stack_trace: 'Error at verification line 42',
+      },
+      // Injected top-level fields
+      raw_payload: { all_events: [1, 2, 3] },
+      metadata: { session_token: 'tok_sess_999' },
+      cookie: 'session_cookie=abc',
+    };
+
+    // Build snapshot through AuditStore
+    const snapshot = AuditStore.buildSnapshot({
+      auditSummary: summary,
+      healthReport: health,
+      findings: [finding],
+      fixPackages: {},
+      verificationStates: { [finding.id]: contaminatedVerificationState },
+    });
+
+    // 1. Verify buildSnapshot mapped to PersistedVerificationState DTO without leaky fields
+    const persistedState = snapshot.verification_states[finding.id];
+    assert.ok(persistedState, 'Persisted verification state should exist');
+    assert.strictEqual(persistedState.finding_id, finding.id);
+    assert.strictEqual(persistedState.stage, 'VERIFIED_RESULT');
+    assert.strictEqual(persistedState.baseline_window.avg_cost_per_call_usd, 0.0085);
+    assert.strictEqual(persistedState.observed_result?.observed_reduction_pct, 40.0);
+
+    // 2. Invariant verification: No disallowed keys in serialized snapshot
+    const serialized = JSON.stringify(snapshot);
+    assert.strictEqual(serialized.includes('raw response data'), false, 'Must not contain response data');
+    assert.strictEqual(serialized.includes('Bearer leak123'), false, 'Must not contain auth header');
+    assert.strictEqual(serialized.includes('Error at verification line 42'), false, 'Must not contain stack trace');
+    assert.strictEqual(serialized.includes('tok_sess_999'), false, 'Must not contain session token');
+
+    // 3. Validation and save round-trip integrity
+    const isValid = AuditStore.validateSnapshot(snapshot);
+    assert.strictEqual(isValid, true, 'Sanitized snapshot must pass validation');
+
+    const saveSuccess = await AuditStore.saveAuditSnapshot(snapshot);
+    assert.strictEqual(saveSuccess, true, 'Save should succeed');
+
+    const loaded = await AuditStore.loadAuditSnapshot(auditId);
+    assert.ok(loaded, 'Loaded snapshot should exist');
+    const loadedState = loaded!.verification_states[finding.id];
+    assert.ok(loadedState, 'Loaded verification state should exist');
+    assert.strictEqual((loadedState as any).response, undefined);
+    assert.strictEqual((loadedState as any).request, undefined);
+    assert.strictEqual((loadedState as any).metadata, undefined);
+    assert.strictEqual((loadedState as any).raw_payload, undefined);
+  });
+
+  test('Test J: Runtime Object Isolation & Deep Scan Rejection (Direct injection of disallowed keys fails validation)', async () => {
+    const auditId = 'audit_isolation_rejection_test';
+    const finding = createSampleFinding(auditId, '1');
+    const health = createSampleHealthReport();
+    const summary: AuditSummary = {
+      id: auditId,
+      created_at: '2026-09-02T18:00:00Z',
+      source: 'custom_logs',
+      total_spend_usd: 50.0,
+      potential_savings_usd: 15.0,
+      annualized_savings_projection_usd: 5475.0,
+      health,
+      findings: [finding],
+      is_sample_data: false,
+    };
+
+    const validSnapshot = AuditStore.buildSnapshot({
+      auditSummary: summary,
+      healthReport: health,
+      findings: [finding],
+      fixPackages: {},
+      verificationStates: {},
+    });
+
+    assert.strictEqual(AuditStore.validateSnapshot(validSnapshot), true, 'Clean snapshot must validate');
+
+    // Test J1: Corrupt snapshot by injecting prompt key into fix_packages directly
+    const corruptedSnapshot1 = JSON.parse(JSON.stringify(validSnapshot));
+    corruptedSnapshot1.fix_packages = {
+      fnd_1: {
+        finding_id: 'fnd_1',
+        unlocked: false,
+        root_cause_hypothesis: 'hypothesis',
+        recommended_approach: 'approach',
+        expected_impact: { monthly_savings_usd: 10, latency_delta_ms: 0, quality_risk: 'LOW' },
+        test_plan: { sample_size: 10, evaluation_criteria: 'crit', traffic_allocation_pct: 5, test_harness_instructions: 'inst' },
+        acceptance_criteria: ['crit1'],
+        verification_instructions: 'vinst',
+        rollback_plan: 'rplan',
+        prompt: 'Contaminated prompt injected directly',
+      },
+    };
+    assert.strictEqual(
+      AuditStore.validateSnapshot(corruptedSnapshot1),
+      false,
+      'Directly injected prompt in fix_package must fail validateSnapshot'
+    );
+    const saveCorrupt1 = await AuditStore.saveAuditSnapshot(corruptedSnapshot1);
+    assert.strictEqual(saveCorrupt1, false, 'Saving contaminated snapshot 1 must return false safely');
+
+    // Test J2: Corrupt snapshot by injecting metadata key into verification_states directly
+    const corruptedSnapshot2 = JSON.parse(JSON.stringify(validSnapshot));
+    corruptedSnapshot2.verification_states = {
+      fnd_1: {
+        finding_id: 'fnd_1',
+        stage: 'BASELINE',
+        baseline_window: { start: '2026-09-01T00:00:00Z', end: '2026-09-01T06:00:00Z', avg_cost_per_call_usd: 0.01, sample_count: 100 },
+        metadata: { leaked_user_id: 'user_456' },
+      },
+    };
+    assert.strictEqual(
+      AuditStore.validateSnapshot(corruptedSnapshot2),
+      false,
+      'Directly injected metadata in verification_states must fail validateSnapshot'
+    );
+    const saveCorrupt2 = await AuditStore.saveAuditSnapshot(corruptedSnapshot2);
+    assert.strictEqual(saveCorrupt2, false, 'Saving contaminated snapshot 2 must return false safely');
+
+    // Test J3: Corrupt snapshot by injecting token key into sample_events directly
+    const corruptedSnapshot3 = JSON.parse(JSON.stringify(validSnapshot));
+    corruptedSnapshot3.findings[0].evidence.sample_events.push({
+      id: 'evt_sample_leaked',
+      token: 'jwt_leaked_token_123',
+    });
+    assert.strictEqual(
+      AuditStore.validateSnapshot(corruptedSnapshot3),
+      false,
+      'Directly injected token in sample_events must fail validateSnapshot'
+    );
+    const saveCorrupt3 = await AuditStore.saveAuditSnapshot(corruptedSnapshot3);
+    assert.strictEqual(saveCorrupt3, false, 'Saving contaminated snapshot 3 must return false safely');
+  });
 });
+
