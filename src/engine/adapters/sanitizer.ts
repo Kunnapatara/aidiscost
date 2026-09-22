@@ -4,9 +4,10 @@
  */
 
 /**
- * Whitelist of known, safe standardized error tokens
+ * Authoritative whitelist of known, safe standardized canonical error tokens.
+ * sanitizeErrorCode() is strictly prohibited from returning any string not present in this set.
  */
-const KNOWN_SAFE_CODES = new Set([
+export const CANONICAL_ERROR_CODES = new Set([
   'ERR_GENERATION',
   'RATE_LIMITED',
   'TIMEOUT',
@@ -34,7 +35,12 @@ const KNOWN_SAFE_CODES = new Set([
 
 /**
  * Sanitizes arbitrary error messages, exception strings, and status messages at the normalization boundary.
- * Guarantees that canonical AIEvent.error_code NEVER contains raw prompt text, completion text, or arbitrary PII.
+ *
+ * Guarantees:
+ * 1. Output is ALWAYS a canonical error code from CANONICAL_ERROR_CODES or undefined.
+ * 2. Arbitrary strings, user prompts, PII, and identifiers (e.g. john_doe, request_abc123) are NEVER returned.
+ * 3. Classifiable error indicators (timeouts, rate limits, quotas, permissions, 5xx) are mapped to canonical codes.
+ * 4. Unclassifiable errors strictly fall back to 'ERR_GENERATION'.
  */
 export function sanitizeErrorCode(
   rawStatusOrMessage: string | undefined,
@@ -43,61 +49,150 @@ export function sanitizeErrorCode(
 ): string | undefined {
   const numStatus = Number(statusCode);
 
-  // 1. Direct HTTP Status Code checks
+  // 1. Direct HTTP Status Code checks mapped to canonical tokens
   if (numStatus === 429) return 'HTTP_429';
   if (numStatus === 408) return 'TIMEOUT';
-  if (numStatus >= 500 && numStatus < 600) return `HTTP_${numStatus}`;
-  if (numStatus >= 400 && numStatus < 500) return `HTTP_${numStatus}`;
+  if (numStatus === 401 || numStatus === 403) return 'AUTH_ERROR';
+  if (numStatus === 400) return 'HTTP_400';
+  if (numStatus === 404) return 'HTTP_404';
+  if (numStatus === 500) return 'HTTP_500';
+  if (numStatus === 502) return 'HTTP_502';
+  if (numStatus === 503) return 'HTTP_503';
+  if (numStatus === 504) return 'HTTP_504';
+  if (numStatus >= 500 && numStatus < 600) return 'HTTP_5XX';
+  if (numStatus >= 400 && numStatus < 500) return 'HTTP_4XX';
 
-  // 2. Inspect raw error token / code if supplied
-  const candidate = String(rawErrorToken || rawStatusOrMessage || '').trim();
-  if (!candidate) return undefined;
+  // 2. Inspect raw error token / code / message if supplied
+  const rawStr = String(rawErrorToken || rawStatusOrMessage || '').trim();
+  if (!rawStr) return undefined;
 
-  // Check if candidate matches an existing uppercase safe code
-  const upper = candidate.toUpperCase();
-  if (KNOWN_SAFE_CODES.has(upper)) {
+  // Ignore benign non-error statuses
+  const lower = rawStr.toLowerCase();
+  if (lower === 'ok' || lower === 'success' || lower === 'unset' || lower === '200') {
+    return undefined;
+  }
+
+  // 3. Exact match with canonical whitelist (e.g. RATE_LIMITED, TIMEOUT, etc.)
+  const upper = rawStr.toUpperCase().replace(/-/g, '_');
+  if (CANONICAL_ERROR_CODES.has(upper)) {
     return upper;
   }
 
-  // If candidate is a concise alphanumeric identifier (e.g. "rate_limit_exceeded", "context_length_exceeded")
-  // and has NO spaces, commas, quotes, colons, newlines, or prompt-like structures:
-  if (/^[a-z0-9_-]{3,32}$/i.test(candidate)) {
-    const normalized = candidate.toUpperCase().replace(/-/g, '_');
-    if (normalized.includes('RATE') || normalized.includes('429')) return 'RATE_LIMITED';
-    if (normalized.includes('TIMEOUT') || normalized.includes('DEADLINE')) return 'TIMEOUT';
-    if (normalized.includes('QUOTA')) return 'QUOTA_EXCEEDED';
-    if (normalized.includes('CONTEXT') || normalized.includes('TOKEN')) return 'CONTEXT_LENGTH_EXCEEDED';
-    if (normalized.includes('AUTH') || normalized.includes('KEY') || normalized.includes('PERMISSION')) return 'AUTH_ERROR';
-    if (normalized.includes('FILTER') || normalized.includes('SAFETY')) return 'CONTENT_FILTER';
-    return normalized;
-  }
+  // 4. Normalized keyword classification across token or message
+  // Replace underscores and hyphens with spaces to handle both snake_case, kebab-case, and natural language
+  const normalizedText = ` ${lower.replace(/[_-]+/g, ' ')} `;
 
-  // 3. Fallback classification from arbitrary message text without leaking text
-  const lower = candidate.toLowerCase();
-  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('too many requests')) {
+  // Rate limit / throttling
+  if (
+    normalizedText.includes(' 429 ') ||
+    normalizedText.includes('rate limit') ||
+    normalizedText.includes('ratelimit') ||
+    normalizedText.includes('too many requests') ||
+    normalizedText.includes('throttl') ||
+    normalizedText.includes('tpm limit') ||
+    normalizedText.includes('rpm limit')
+  ) {
     return 'RATE_LIMITED';
   }
-  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('deadline exceeded')) {
+
+  // Timeout / deadline
+  if (
+    normalizedText.includes(' 408 ') ||
+    normalizedText.includes('timeout') ||
+    normalizedText.includes('timed out') ||
+    normalizedText.includes('deadline exceeded') ||
+    normalizedText.includes('gateway timeout') ||
+    normalizedText.includes('request timeout')
+  ) {
     return 'TIMEOUT';
   }
-  if (lower.includes('quota') || lower.includes('credit') || lower.includes('billing')) {
+
+  // Quota / billing
+  if (
+    normalizedText.includes('quota') ||
+    normalizedText.includes('insufficient balance') ||
+    normalizedText.includes('billing') ||
+    normalizedText.includes('credit limit')
+  ) {
     return 'QUOTA_EXCEEDED';
   }
-  if (lower.includes('context length') || lower.includes('maximum context') || lower.includes('max_tokens')) {
+
+  // Context length / max tokens
+  if (
+    normalizedText.includes('context length') ||
+    normalizedText.includes('maximum context') ||
+    normalizedText.includes('max tokens') ||
+    normalizedText.includes('token limit') ||
+    normalizedText.includes('prompt is too long') ||
+    normalizedText.includes('context window')
+  ) {
     return 'CONTEXT_LENGTH_EXCEEDED';
   }
-  if (lower.includes('content management policy') || lower.includes('safety') || lower.includes('moderation') || lower.includes('content filter')) {
+
+  // Content safety / moderation filter
+  if (
+    normalizedText.includes('content filter') ||
+    normalizedText.includes('safety') ||
+    normalizedText.includes('moderation') ||
+    normalizedText.includes('content management policy') ||
+    normalizedText.includes('harmful content') ||
+    normalizedText.includes('policy violation')
+  ) {
     return 'CONTENT_FILTER';
   }
-  if (lower.includes('unauthorized') || lower.includes('api key') || lower.includes('permission denied') || lower.includes('401') || lower.includes('403')) {
+
+  // Auth / permissions
+  if (
+    normalizedText.includes('unauthorized') ||
+    normalizedText.includes('api key') ||
+    normalizedText.includes('permission denied') ||
+    normalizedText.includes('access denied') ||
+    normalizedText.includes('forbidden') ||
+    normalizedText.includes('authentication') ||
+    normalizedText.includes('unauthenticated') ||
+    normalizedText.includes('invalid key')
+  ) {
     return 'AUTH_ERROR';
   }
-  if (lower.includes('500') || lower.includes('502') || lower.includes('503') || lower.includes('504') || lower.includes('internal server') || lower.includes('bad gateway')) {
+
+  // Server error / 5xx
+  if (
+    normalizedText.includes(' 500 ') ||
+    normalizedText.includes(' 502 ') ||
+    normalizedText.includes(' 503 ') ||
+    normalizedText.includes(' 504 ') ||
+    normalizedText.includes('internal server') ||
+    normalizedText.includes('bad gateway') ||
+    normalizedText.includes('service unavailable') ||
+    normalizedText.includes('server error')
+  ) {
     return 'HTTP_5XX';
   }
-  if (lower.includes('connection reset') || lower.includes('econnreset') || lower.includes('network error')) {
+
+  // Connection / network failure
+  if (
+    normalizedText.includes('connection reset') ||
+    normalizedText.includes('econnreset') ||
+    normalizedText.includes('connection error') ||
+    normalizedText.includes('network error') ||
+    normalizedText.includes('socket hang up') ||
+    normalizedText.includes('connection refused') ||
+    normalizedText.includes('econnrefused') ||
+    normalizedText.includes('fetch failed')
+  ) {
     return 'CONNECTION_ERROR';
   }
 
+  // Model not found
+  if (
+    normalizedText.includes('model not found') ||
+    normalizedText.includes('does not exist') ||
+    normalizedText.includes('no such model')
+  ) {
+    return 'MODEL_NOT_FOUND';
+  }
+
+  // 5. Unknown identifiers or unclassifiable messages:
+  // Strictly return 'ERR_GENERATION' - never return arbitrary input strings or identifiers
   return 'ERR_GENERATION';
 }
