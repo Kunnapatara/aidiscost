@@ -3,18 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { Finding, VerificationState } from '../types/domain';
+import React, { useState, useRef } from 'react';
+import { Finding, VerificationState, AIEvent } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
-import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical, Upload, FileText } from 'lucide-react';
 import { calculateOutcomeFee, COMMERCIAL_PRICING } from '../engine/billing/outcome';
+import { IngestionPipeline } from '../engine/ingestion/pipeline';
 
 interface VerifyViewProps {
   finding: Finding;
   verificationState: VerificationState;
   onDeploy: (findingId: string) => void;
   onIngestObservation: (findingId: string, count: number) => void;
+  onIngestRealObservation?: (findingId: string, events: AIEvent[], fileName: string) => void;
   onBack: () => void;
 }
 
@@ -23,8 +25,16 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
   verificationState,
   onDeploy,
   onIngestObservation,
+  onIngestRealObservation,
   onBack,
 }) => {
+  const [postImportError, setPostImportError] = useState<string | null>(null);
+  const [postImportSuccess, setPostImportSuccess] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [postPasteContent, setPostPasteContent] = useState('');
+  const [showPostPaste, setShowPostPaste] = useState(false);
+  const postFileInputRef = useRef<HTMLInputElement>(null);
+
   const stage = verificationState.stage;
   const isBaseline = stage === 'BASELINE';
   const isObserving = stage === 'OBSERVATION_ACTIVE';
@@ -329,7 +339,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
       )}
 
       {/* Interactive Verification Workflow Controls */}
-      <div className="p-6 rounded-2xl bg-white border border-slate-200 space-y-4">
+      <div className="p-6 rounded-2xl bg-white border border-slate-200 space-y-6">
         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
           Verification Testing &amp; Lifecycle Controls
         </h3>
@@ -352,30 +362,214 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
             </button>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="text-xs text-slate-600 leading-relaxed">
-              Deployment timestamp logged: <strong className="font-mono text-slate-900">{verificationState.deployment_timestamp}</strong>.
-              Telemetry events occurring after this timestamp are evaluated against baseline unit cost.
+          <div className="space-y-6">
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div className="font-semibold text-slate-900 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-slate-600" />
+                <span>Active Observation Window</span>
+              </div>
+              <p className="text-slate-600 leading-relaxed">
+                Deployment timestamp logged: <strong className="font-mono text-slate-900">{verificationState.deployment_timestamp}</strong>.
+                Only events occurring after this timestamp that match the affected scope ({finding.affected_scope}) are evaluated.
+              </p>
+              {verificationState.post_deployment_file_name && (
+                <div className="mt-2 pt-2 border-t border-slate-200 text-slate-700 font-mono text-[11px] flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Imported Source: <strong>{verificationState.post_deployment_file_name}</strong></span>
+                </div>
+              )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                id="btn-ingest-insufficient-sample"
-                onClick={() => onIngestObservation(finding.id, 5)}
-                className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 transition-colors"
-              >
-                Simulate 5 Events (Triggers Insufficient Observation)
-              </button>
+            {/* SECTION 1: Production Post-Deployment Telemetry Import (Primary Path) */}
+            <div className="p-5 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                      Authoritative Path
+                    </span>
+                    <h4 className="text-sm font-bold text-slate-900">Import Post-Deployment Telemetry</h4>
+                  </div>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    Upload telemetry captured after deployment. AIDisCost evaluates unit costs, validates event provenance,
+                    and calculates verified empirical reduction.
+                  </p>
+                </div>
+              </div>
 
-              <button
-                type="button"
-                id="btn-ingest-full-verification"
-                onClick={() => onIngestObservation(finding.id, 25)}
-                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-colors shadow-xs"
-              >
-                Simulate 25 Events (Triggers Empirical Verification Preview)
-              </button>
+              {postImportError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-900 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{postImportError}</span>
+                </div>
+              )}
+
+              {postImportSuccess && (
+                <div className="p-3 rounded-xl bg-emerald-100 border border-emerald-300 text-xs text-emerald-900 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <span>{postImportSuccess}</span>
+                </div>
+              )}
+
+              <input
+                ref={postFileInputRef}
+                type="file"
+                accept=".csv,.json,.jsonl,.ndjson,.txt"
+                className="hidden"
+                id="input-post-deployment-file"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    setPostImportError(null);
+                    setPostImportSuccess(null);
+                    setIsImporting(true);
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      try {
+                        const text = ev.target?.result;
+                        if (typeof text !== 'string') {
+                          throw new Error('Could not read post-deployment file.');
+                        }
+                        const pipelineResult = IngestionPipeline.ingest(text, {
+                          source: 'custom_logs',
+                          fileName: file.name,
+                        });
+                        const events = pipelineResult.ingestResult?.events || [];
+                        if (events.length === 0) {
+                          throw new Error(`Parsed 0 telemetry events from "${file.name}". Please check the file format.`);
+                        }
+                        const productionEvents = events.map(event => ({
+                          ...event,
+                          is_simulated: false,
+                        }));
+                        if (onIngestRealObservation) {
+                          onIngestRealObservation(finding.id, productionEvents, file.name);
+                        }
+                        setPostImportSuccess(`Successfully processed ${productionEvents.length} post-deployment events from "${file.name}".`);
+                      } catch (err) {
+                        setPostImportError((err as Error).message || 'Failed to process post-deployment telemetry.');
+                      } finally {
+                        setIsImporting(false);
+                      }
+                    };
+                    reader.onerror = () => {
+                      setPostImportError('File reading error occurred.');
+                      setIsImporting(false);
+                    };
+                    reader.readAsText(file);
+                  }
+                }}
+              />
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  id="btn-upload-post-telemetry"
+                  disabled={isImporting}
+                  onClick={() => postFileInputRef.current?.click()}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors flex items-center gap-2 shadow-xs"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>{isImporting ? 'Processing File...' : 'Upload Post-Deployment File (.json, .jsonl, .csv)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-toggle-post-paste"
+                  onClick={() => setShowPostPaste(!showPostPaste)}
+                  className="px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-white transition-colors"
+                >
+                  {showPostPaste ? 'Hide Paste Form' : 'Paste Post-Deployment Logs'}
+                </button>
+              </div>
+
+              {showPostPaste && (
+                <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-3 mt-3">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Paste Post-Deployment Telemetry (JSON lines or CSV)
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={postPasteContent}
+                    onChange={(e) => setPostPasteContent(e.target.value)}
+                    placeholder='{"timestamp":"2026-09-23T20:00:00Z","model":"gpt-4o-mini","prompt_tokens":850,"completion_tokens":120,"cost":0.0018}'
+                    className="w-full text-xs font-mono p-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
+                  />
+                  <button
+                    type="button"
+                    id="btn-submit-post-paste"
+                    disabled={isImporting || !postPasteContent.trim()}
+                    onClick={() => {
+                      const trimmed = postPasteContent.trim();
+                      if (!trimmed) return;
+                      setPostImportError(null);
+                      setPostImportSuccess(null);
+                      setIsImporting(true);
+                      try {
+                        const pipelineResult = IngestionPipeline.ingest(trimmed, {
+                          source: 'custom_logs',
+                          fileName: 'pasted_post_deployment_telemetry',
+                        });
+                        const events = pipelineResult.ingestResult?.events || [];
+                        if (events.length === 0) {
+                          throw new Error('Parsed 0 telemetry events from pasted payload.');
+                        }
+                        const productionEvents = events.map(event => ({
+                          ...event,
+                          is_simulated: false,
+                        }));
+                        if (onIngestRealObservation) {
+                          onIngestRealObservation(finding.id, productionEvents, 'pasted_post_deployment_telemetry');
+                        }
+                        setPostImportSuccess(`Successfully processed ${productionEvents.length} post-deployment events.`);
+                        setPostPasteContent('');
+                        setShowPostPaste(false);
+                      } catch (err) {
+                        setPostImportError((err as Error).message || 'Failed to process pasted telemetry.');
+                      } finally {
+                        setIsImporting(false);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-colors"
+                  >
+                    Ingest &amp; Evaluate Pasted Telemetry
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* SECTION 2: Demo / Simulation Sandbox (Demarcated Non-Authoritative) */}
+            <div className="p-5 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                  Demo Sandbox
+                </span>
+                <h4 className="text-xs font-bold text-amber-950">Simulation Preview (Non-Authoritative)</h4>
+              </div>
+              <p className="text-xs text-amber-900/80 leading-relaxed">
+                Generate synthetic post-deployment events to preview how the verification stage and commercial fee formula behave.
+                Simulation telemetry is explicitly marked non-authoritative and will never trigger an outcome fee.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  id="btn-ingest-insufficient-sample"
+                  onClick={() => onIngestObservation(finding.id, 5)}
+                  className="px-3.5 py-2 rounded-lg border border-amber-300 bg-white text-amber-950 text-xs font-semibold hover:bg-amber-100/50 transition-colors"
+                >
+                  Simulate 5 Events (Triggers Insufficient Observation)
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-ingest-full-verification"
+                  onClick={() => onIngestObservation(finding.id, 25)}
+                  className="px-3.5 py-2 rounded-lg bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 transition-colors shadow-xs"
+                >
+                  Simulate 25 Events (Triggers Empirical Verification Preview)
+                </button>
+              </div>
             </div>
           </div>
         )}

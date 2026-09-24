@@ -220,6 +220,9 @@ export class AuditStore {
       finding_id: String(raw.finding_id || ''),
       unlocked: Boolean(raw.unlocked),
       unlocked_at: raw.unlocked_at ? String(raw.unlocked_at) : undefined,
+      entitlement_status: (['LOCKED', 'DEMO_UNLOCKED', 'PAID_UNLOCKED'].includes(raw.entitlement_status as string)
+        ? raw.entitlement_status
+        : (Boolean(raw.unlocked) ? 'DEMO_UNLOCKED' : 'LOCKED')) as 'LOCKED' | 'DEMO_UNLOCKED' | 'PAID_UNLOCKED',
       purchase_id: raw.purchase_id ? String(raw.purchase_id) : undefined,
       root_cause_hypothesis: String(raw.root_cause_hypothesis || ''),
       recommended_approach: String(raw.recommended_approach || ''),
@@ -308,6 +311,10 @@ export class AuditStore {
 
     if (typeof raw.is_simulated === 'boolean') {
       clean.is_simulated = raw.is_simulated;
+    }
+
+    if (typeof raw.post_deployment_file_name === 'string') {
+      clean.post_deployment_file_name = String(raw.post_deployment_file_name);
     }
 
     return clean;

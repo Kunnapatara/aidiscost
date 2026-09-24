@@ -132,8 +132,8 @@ export function isComparableEvent(event: AIEvent, finding: Finding): boolean {
         .map(s => s.model?.toLowerCase().trim())
         .filter(Boolean)
     );
-    if (sampleModels.size > 0 && sampleModels.has(eventModel)) {
-      return true;
+    if (sampleModels.size > 0) {
+      return sampleModels.has(eventModel);
     }
   }
 
@@ -180,12 +180,15 @@ export function initializeVerificationState(finding: Finding): VerificationState
 export function evaluateVerification(
   currentState: VerificationState,
   finding: Finding,
-  postDeploymentEvents: AIEvent[]
+  postDeploymentEvents: AIEvent[],
+  postDeploymentFileName?: string
 ): VerificationState {
   // If not deployed yet
   if (currentState.stage === 'BASELINE') {
     return currentState;
   }
+
+  const fileName = postDeploymentFileName || currentState.post_deployment_file_name;
 
   const deployTime = currentState.deployment_timestamp
     ? new Date(currentState.deployment_timestamp).getTime()
@@ -238,6 +241,7 @@ export function evaluateVerification(
       ...currentState,
       stage: 'OBSERVATION_ACTIVE',
       is_simulated: true,
+      post_deployment_file_name: fileName,
       observation_window: observationWindow,
       simulated_result: simResult,
       observed_result: {
@@ -262,6 +266,7 @@ export function evaluateVerification(
       ...currentState,
       stage: 'OBSERVATION_ACTIVE',
       is_simulated: false,
+      post_deployment_file_name: fileName,
       observation_window: {
         start: new Date(deployTime).toISOString(),
         end: new Date().toISOString(),
@@ -304,6 +309,7 @@ export function evaluateVerification(
       ...currentState,
       stage: 'OBSERVATION_ACTIVE',
       is_simulated: false,
+      post_deployment_file_name: fileName,
       observation_window: observationWindow,
       observed_result: {
         pre_cost_per_call_usd: currentState.baseline_window.avg_cost_per_call_usd,
@@ -311,7 +317,9 @@ export function evaluateVerification(
         observed_reduction_pct: 0,
         annualized_realized_savings_usd: 0,
         verification_confidence: 'INSUFFICIENT_OBSERVATION',
-        verification_notes: `Observed ${eligiblePostEvents.length} of ${VERIFICATION_CONSTRAINTS.MIN_POST_DEPLOYMENT_EVENTS} required post-deployment events.${exclusionNote} Minimum 15 comparable events required over active window.`,
+        verification_notes: eligiblePostEvents.length === 0
+          ? `Verification cannot be completed from the available comparable telemetry: 0 comparable events found after deployment timestamp.${exclusionNote}`
+          : `Observed ${eligiblePostEvents.length} of ${VERIFICATION_CONSTRAINTS.MIN_POST_DEPLOYMENT_EVENTS} required post-deployment events.${exclusionNote} Minimum 15 comparable events required over active window.`,
         is_authoritative: false,
       },
     };
@@ -336,6 +344,7 @@ export function evaluateVerification(
     ...currentState,
     stage: isVerified ? 'VERIFIED_RESULT' : 'OBSERVATION_ACTIVE',
     is_simulated: false,
+    post_deployment_file_name: fileName,
     observation_window: observationWindow,
     observed_result: {
       pre_cost_per_call_usd: Number(preAvgCost.toFixed(6)),

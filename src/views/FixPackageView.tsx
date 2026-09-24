@@ -50,10 +50,17 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
 
         <div className="flex items-center gap-2">
           {fixPackage.unlocked ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-              <Unlock className="w-3.5 h-3.5 text-emerald-700" />
-              <span>UNLOCKED DELIVERABLE</span>
-            </span>
+            fixPackage.entitlement_status === 'PAID_UNLOCKED' ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                <Unlock className="w-3.5 h-3.5 text-emerald-700" />
+                <span>PAID ENTITLEMENT VERIFIED</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                <Unlock className="w-3.5 h-3.5 text-amber-700" />
+                <span>PREVIEW UNLOCKED (ADAPTER READY)</span>
+              </span>
+            )
           ) : (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-800 border border-slate-300">
               <Lock className="w-3.5 h-3.5 text-slate-600" />
@@ -107,15 +114,15 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
               className="px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition-colors shadow-sm flex items-center gap-2"
             >
               {isProcessing ? (
-                <span>Verifying Entitlement...</span>
+                <span>Checking Entitlement...</span>
               ) : (
                 <>
                   <Unlock className="w-4 h-4" />
-                  <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}</span>
+                  <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} (Preview Mode)</span>
                 </>
               )}
             </button>
-            <span className="text-[11px] text-slate-400">One-time payment (${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}) &bull; Simulation mode (no live credit card charged)</span>
+            <span className="text-[11px] text-slate-400">One-time deliverable (${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}) &bull; Standalone MVP mode (no live credit card charged)</span>
           </div>
         </div>
       )}
@@ -203,11 +210,11 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
               className="px-6 py-3 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition-colors inline-flex items-center gap-2"
             >
               <Unlock className="w-4 h-4 text-emerald-400" />
-              <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} (One-Time)</span>
+              <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} (Preview Mode)</span>
             </button>
           </div>
           <p className="text-[11px] text-slate-400">
-            One-time payment per finding &bull; No subscription &bull; Simulation mode (no live credit card charged)
+            One-time deliverable per finding &bull; No subscription &bull; Standalone MVP mode (no live credit card charged)
           </p>
         </div>
       ) : (

@@ -136,6 +136,7 @@ export interface FixPackage {
   finding_id: string;
   unlocked: boolean;
   unlocked_at?: string;
+  entitlement_status?: 'LOCKED' | 'DEMO_UNLOCKED' | 'PAID_UNLOCKED';
   purchase_id?: string;
   root_cause_hypothesis: string;
   recommended_approach: string;
@@ -190,6 +191,7 @@ export interface VerificationState {
   observed_result?: VerificationObservationResult;
   simulated_result?: VerificationObservationResult;
   is_simulated?: boolean;
+  post_deployment_file_name?: string;
 }
 
 /**

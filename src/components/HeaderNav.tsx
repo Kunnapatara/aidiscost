@@ -16,6 +16,7 @@ interface HeaderNavProps {
   source?: TelemetrySource;
   onOpenAuth?: () => void;
   isAuthenticated?: boolean;
+  userEmail?: string;
 }
 
 export const HeaderNav: React.FC<HeaderNavProps> = ({
@@ -26,6 +27,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   activeFindingId,
   onOpenAuth,
   isAuthenticated = false,
+  userEmail,
 }) => {
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-xs border-b border-slate-200">
@@ -134,9 +136,10 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
             type="button"
             id="btn-auth-toggle"
             onClick={onOpenAuth}
-            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors flex items-center gap-1.5"
           >
-            {isAuthenticated ? 'Account: kunnapatara@gmail.com' : 'Sign In'}
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span>{userEmail ? `Workspace: ${userEmail}` : 'Identity: Standalone (SSO Adapter Ready)'}</span>
           </button>
 
           {currentRoute !== '/connect' && (

@@ -23,6 +23,7 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
       return {
         finding_id: finding.id,
         unlocked: isUnlocked,
+        entitlement_status: isUnlocked ? 'DEMO_UNLOCKED' : 'LOCKED',
         root_cause_hypothesis:
           'Hypothesis: Application routing defaults to a frontier flagship model regardless of task complexity. For short classification, extraction, and structured validation calls matching observed token profiles, candidate distilled models may provide sufficient capability at lower catalog pricing.',
         recommended_approach:
@@ -57,6 +58,7 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
       return {
         finding_id: finding.id,
         unlocked: isUnlocked,
+        entitlement_status: isUnlocked ? 'DEMO_UNLOCKED' : 'LOCKED',
         root_cause_hypothesis:
           'Hypothesis: Client SDK error handling lacks decorrelated exponential backoff and jitter. When provider APIs return HTTP 429 (rate limit) or 500 (transient timeout), clients trigger rapid consecutive retries, exacerbating throttling and incurring spend on aborted attempts.',
         recommended_approach:
@@ -90,6 +92,7 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
       return {
         finding_id: finding.id,
         unlocked: isUnlocked,
+        entitlement_status: isUnlocked ? 'DEMO_UNLOCKED' : 'LOCKED',
         root_cause_hypothesis:
           'Hypothesis: Application workflows execute repetitive identical prompts multiple times within the same user session or trace context without a temporary response cache.',
         recommended_approach:

@@ -22,7 +22,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onAuthenticate,
   currentEmail,
 }) => {
-  const [email, setEmail] = useState(currentEmail || 'kunnapatara@gmail.com');
+  const [email, setEmail] = useState(currentEmail || '');
   const [submitted, setSubmitted] = useState(false);
 
   if (!isOpen) return null;
@@ -52,35 +52,44 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <Mail className="w-5 h-5" />
         </div>
 
-        <h3 className="text-lg font-bold text-slate-900">Account &amp; History Access</h3>
-        <p className="text-xs text-slate-500 mt-1 mb-5 leading-relaxed">
-          Zero-friction access for purchased Optimization Fix Packages and saved verification audits.
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+            SSO Adapter Ready &bull; Standalone Mode
+          </span>
+        </div>
+        <h3 className="text-lg font-bold text-slate-900">Workspace &amp; Identity Configuration</h3>
+        <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
+          AIDisCost parses telemetry client-side with zero remote exfiltration. Standalone audits, data health,
+          and verification do not require cloud account authentication.
         </p>
 
         {submitted ? (
           <div className="p-4 rounded-xl bg-emerald-50 text-emerald-900 text-xs font-semibold flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>Authenticated as {email}</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Local Session Contact: {email} (Identity Provider Not Connected)</span>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="text-xs font-bold text-slate-700 block mb-1">Work Email</label>
+              <label className="text-xs font-bold text-slate-700 block mb-1">Team Contact Email (Optional)</label>
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="eng-lead@company.com"
+                placeholder="eng-team@company.com"
                 className="w-full text-xs p-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
               />
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Used locally for export metadata and audit session identification.
+              </span>
             </div>
 
             <button
               type="submit"
               className="w-full py-2.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-colors"
             >
-              Sign In with Magic Link
+              Save Local Session Contact
             </button>
           </form>
         )}
@@ -117,9 +126,13 @@ export const BillingResultModal: React.FC<BillingResultModalProps> = ({
             <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center mb-3">
               <CheckCircle2 className="w-6 h-6" />
             </div>
+            <div className="inline-block px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-100 text-amber-900 border border-amber-300 mb-2">
+              Preview Mode &bull; Adapter Ready
+            </div>
             <h3 className="text-lg font-bold text-slate-900">Optimization Fix Package Unlocked</h3>
-            <p className="text-xs text-slate-600 mt-1 mb-5">
-              Test Entitlement Verified ($49.00). Idempotency token registered.
+            <p className="text-xs text-slate-600 mt-1 mb-5 leading-relaxed">
+              Commercial Contract: $49 one-time per finding. In this standalone MVP preview, no live credit card
+              was charged. Root cause analysis, canary harness config, acceptance criteria, and rollback protocol are now accessible.
             </p>
             <button
               type="button"
@@ -134,9 +147,9 @@ export const BillingResultModal: React.FC<BillingResultModalProps> = ({
             <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-600 mx-auto flex items-center justify-center mb-3">
               <AlertTriangle className="w-6 h-6" />
             </div>
-            <h3 className="text-lg font-bold text-slate-900">Checkout Cancelled</h3>
-            <p className="text-xs text-slate-600 mt-1 mb-5">
-              No charges were made to your account. You can return to the evidence finding at any time.
+            <h3 className="text-lg font-bold text-slate-900">Action Cancelled</h3>
+            <p className="text-xs text-slate-600 mt-1 mb-5 leading-relaxed">
+              No changes or charges were made. You can return to the evidence finding at any time.
             </p>
             <button
               type="button"

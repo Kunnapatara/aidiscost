@@ -55,7 +55,7 @@ export default function App() {
   // Supporting States
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [userEmail, setUserEmail] = useState<string>('kunnapatara@gmail.com');
+  const [userEmail, setUserEmail] = useState<string>('');
 
   const [billingResultModal, setBillingResultModal] = useState<{
     isOpen: boolean;
@@ -351,6 +351,7 @@ export default function App() {
           ...pkg,
           unlocked: true,
           unlocked_at: new Date().toISOString(),
+          entitlement_status: 'DEMO_UNLOCKED',
         });
       }
       persistCurrentSnapshot({ fixPackages: updated });
@@ -390,6 +391,25 @@ export default function App() {
           },
         });
       }
+      persistCurrentSnapshot({ verificationStates: updated });
+      return updated;
+    });
+  };
+
+  // Handle Ingestion of Real Post-Deployment Telemetry
+  const handleIngestRealObservation = (findingId: string, postEvents: AIEvent[], fileName?: string) => {
+    const fnd = auditSummary?.findings.find((f) => f.id === findingId);
+    if (!fnd) return;
+
+    const currentVerifyState = verificationStates.get(findingId);
+    if (!currentVerifyState) return;
+
+    // Evaluate verification with real events
+    const newVerifyState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
+
+    setVerificationStates((prev) => {
+      const updated = new Map(prev);
+      updated.set(findingId, newVerifyState);
       persistCurrentSnapshot({ verificationStates: updated });
       return updated;
     });
@@ -465,6 +485,7 @@ export default function App() {
         source={activeSource}
         onOpenAuth={() => setShowAuthModal(true)}
         isAuthenticated={isAuthenticated}
+        userEmail={userEmail}
       />
 
       {/* Main Content Area */}
@@ -548,6 +569,7 @@ export default function App() {
                 verificationState={activeVerificationState}
                 onDeploy={handleMarkDeployed}
                 onIngestObservation={handleSimulatePostObservation}
+                onIngestRealObservation={handleIngestRealObservation}
                 onBack={() => navigateTo(`/finding/${activeFinding.id}`)}
               />
             )}
