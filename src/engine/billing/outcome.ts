@@ -71,12 +71,12 @@ export function calculateOutcomeFee(
     realizedRatio = 0;
   } else {
     realizedRatio = verifiedMonthly / originalEstimate;
-    // Boundary: Below 50% (< 0.50) triggers protection and waives fee to $0.
+    // Boundary: Strictly below 50% (< 0.50) triggers protection and waives fee to $0.
     // 50.00% and above does NOT trigger protection (normal fee calculation).
-    // 1e-7 floating-point tolerance protects against IEEE 754 precision issues (e.g. 499.999999999 vs 500)
-    if (realizedRatio < (COMMERCIAL_PRICING.PROTECTION_MIN_RATIO - 1e-7)) {
+    // No artificial contractual tolerance or epsilon is permitted.
+    if (realizedRatio < COMMERCIAL_PRICING.PROTECTION_MIN_RATIO) {
       protectionTriggered = true;
-      protectionReason = `Verified savings ($${verifiedMonthly.toFixed(2)}/mo, ${(realizedRatio * 100).toFixed(1)}%) fell below 50% of the original estimate ($${originalEstimate.toFixed(2)}/mo). 50% Protection Clause triggered: $0.00 fee.`;
+      protectionReason = `Verified savings ($${verifiedMonthly.toFixed(2)}/mo, ${(realizedRatio * 100).toFixed(2)}%) fell below 50% of the original estimate ($${originalEstimate.toFixed(2)}/mo). 50% Protection Clause triggered: $0.00 fee.`;
     }
   }
 
@@ -88,13 +88,13 @@ export function calculateOutcomeFee(
     rawOutcomeFeeUsd: rawFee,
     capAmountUsd: cap,
     originalEstimatedMonthlySavingsUsd: originalEstimate,
-    realizedRatio: Number(realizedRatio.toFixed(4)),
+    realizedRatio,
     protectionTriggered,
     protectionReason,
     finalOutcomeFeeUsd: finalFee,
     isPayable: finalFee > 0,
     methodologyDescription: protectionTriggered
-      ? `50% Protection Clause triggered (achieved ${(realizedRatio * 100).toFixed(1)}% vs 50% threshold). Outcome fee waived ($0.00).`
+      ? `50% Protection Clause triggered (achieved ${(realizedRatio * 100).toFixed(2)}% vs 50% threshold). Outcome fee waived ($0.00).`
       : `Verified monthly run-rate ($${verifiedMonthly.toFixed(2)}) annualized to $${annualized.toFixed(2)}. 20% fee is $${rawFee.toFixed(2)}, capped at 1 month ($${cap.toFixed(2)}). Final one-time fee: $${finalFee.toFixed(2)}.`,
   };
 }

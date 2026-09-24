@@ -437,7 +437,10 @@ export default function App() {
       });
     }
 
-    const newVerifyState = evaluateVerification(currentVerifyState, fnd, simulatedPostEvents);
+    const newVerifyState = {
+      ...evaluateVerification(currentVerifyState, fnd, simulatedPostEvents),
+      is_simulated: true,
+    };
 
     setVerificationStates((prev) => {
       const updated = new Map(prev);

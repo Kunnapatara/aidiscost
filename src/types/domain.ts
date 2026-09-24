@@ -178,6 +178,7 @@ export interface VerificationState {
     verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
     verification_notes: string;
   };
+  is_simulated?: boolean;
 }
 
 /**

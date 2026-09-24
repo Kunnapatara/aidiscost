@@ -77,11 +77,25 @@ describe('AIDisCost Commercial Contract — Outcome Fee & Protection Tests', () 
       assert.strictEqual(result.isPayable, false);
     });
 
-    test('does NOT trigger protection clause when verified is exactly $500.00 (50.00%)', () => {
+    test('Case A: triggers protection clause and waives fee to $0 when verified is $499.999999 (exact floating-point boundary)', () => {
+      const result = calculateOutcomeFee(499.999999, originalEstimate);
+      assert.strictEqual(result.protectionTriggered, true);
+      assert.strictEqual(result.finalOutcomeFeeUsd, 0);
+      assert.strictEqual(result.isPayable, false);
+    });
+
+    test('Case B: does NOT trigger protection clause when verified is exactly $500.00 (50.00% exact boundary)', () => {
       const result = calculateOutcomeFee(500.00, originalEstimate);
       assert.strictEqual(result.realizedRatio, 0.5);
       assert.strictEqual(result.protectionTriggered, false);
       // Raw: $500 * 12 * 0.20 = $1,200. Cap: $500. Final: $500.
+      assert.strictEqual(result.finalOutcomeFeeUsd, 500);
+      assert.strictEqual(result.isPayable, true);
+    });
+
+    test('Case C: does NOT trigger protection clause when verified is $500.000001 (>50.00% exact boundary)', () => {
+      const result = calculateOutcomeFee(500.000001, originalEstimate);
+      assert.strictEqual(result.protectionTriggered, false);
       assert.strictEqual(result.finalOutcomeFeeUsd, 500);
       assert.strictEqual(result.isPayable, true);
     });

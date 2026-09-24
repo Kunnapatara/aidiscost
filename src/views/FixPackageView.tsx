@@ -66,13 +66,13 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
       {/* Package Header */}
       <div>
         <span className="text-xs font-mono uppercase tracking-wider text-purple-700 font-semibold">
-          Step 3: Actionable Engineering Plan (FIX)
+          Step 2: Fix Package
         </span>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mt-1">
           Optimization Fix Package: {finding.title}
         </h1>
         <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-          Engineered remediation plan for {finding.affected_scope}. Non-invasive specification
+          Engineered remediation plan for {finding.affected_scope}. Actionable deliverable
           designed for your team to test, merge, and verify without vendor lock-in.
         </p>
       </div>
@@ -87,11 +87,11 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
             </div>
             <h2 className="text-xl font-bold">Unlock Full Implementation Specifications</h2>
             <p className="text-xs text-slate-300 mt-1 max-w-lg leading-relaxed">
-              Unlocks the root cause diagnosis, 48-hour canary test harness instructions,
+              Unlocks the root cause diagnosis, recommended architecture specification, 48-hour canary test harness instructions,
               acceptance criteria checklist, rollback protocol, and verification thresholds.
             </p>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11px] text-slate-400 font-medium">
-              <span>&bull; One-time payment</span>
+              <span>&bull; One-time deliverable</span>
               <span>&bull; No subscription</span>
               <span>&bull; Each finding unlocks separately</span>
               <span>&bull; Implement using your own engineers, Cursor, or existing tools</span>
@@ -120,7 +120,17 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
         </div>
       )}
 
-      {/* Expected Impact Summary (Visible before & after) */}
+      {/* Free Audit Preview: High-Level Recommendation Summary & Expected Impact */}
+      <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
+        <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block">
+          Free Audit Preview &bull; High-Level Opportunity Summary
+        </span>
+        <p className="text-sm text-slate-800 leading-relaxed font-sans">
+          {finding.summary}
+        </p>
+      </div>
+
+      {/* Expected Impact Summary (Estimated / Potential, not guaranteed) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
         <div className="p-4 rounded-xl bg-white border border-slate-200">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-1">
@@ -129,7 +139,7 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
           <span className="text-2xl font-bold font-mono text-emerald-700 tabular-nums">
             ${fixPackage.expected_impact.monthly_savings_usd.toFixed(2)}
           </span>
-          <p className="text-[11px] text-slate-500 mt-1">Direct reduction at steady state volume</p>
+          <p className="text-[11px] text-slate-500 mt-1">Estimated direct reduction at steady-state volume</p>
         </div>
 
         <div className="p-4 rounded-xl bg-white border border-slate-200">
@@ -153,109 +163,97 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
         </div>
       </div>
 
-      {/* Main Fix Package Details (Revealed or Previewed) */}
-      <div className="space-y-6">
-        {/* 1. Root Cause Hypothesis */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <span>1. Root Cause Hypothesis</span>
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
-            {fixPackage.root_cause_hypothesis}
+      {/* Actionable Engineering Deliverables (True DOM Gating) */}
+      {!fixPackage.unlocked ? (
+        <div className="p-8 rounded-2xl bg-white border border-slate-200 text-center space-y-4">
+          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-700">
+            <Lock className="w-6 h-6" />
+          </div>
+          <div className="max-w-md mx-auto space-y-1">
+            <h3 className="text-base font-bold text-slate-900">
+              Actionable Implementation Package Gated
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              The complete engineering package includes Root Cause Diagnosis, Recommended Architecture Specification,
+              Canary Test Harness Configuration, Acceptance Criteria Checklist, Rapid Rollback Protocol, and Empirical Verification Instructions.
+            </p>
+          </div>
+          <div className="pt-2">
+            <button
+              type="button"
+              id="btn-unlock-deliverables"
+              onClick={handleSimulatePayment}
+              disabled={isProcessing}
+              className="px-6 py-3 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition-colors inline-flex items-center gap-2"
+            >
+              <Unlock className="w-4 h-4 text-emerald-400" />
+              <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} (One-Time)</span>
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            One-time payment per finding &bull; No subscription &bull; Simulation mode (no live credit card charged)
           </p>
         </div>
+      ) : (
+        <div className="space-y-6">
+          {/* 1. Root Cause Hypothesis */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <span>1. Root Cause Hypothesis</span>
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
+              {fixPackage.root_cause_hypothesis}
+            </p>
+          </div>
 
-        {/* 2. Recommended Approach */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <span>2. Recommended Architecture Approach</span>
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
-            {fixPackage.recommended_approach}
-          </p>
-        </div>
+          {/* 2. Recommended Approach */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <span>2. Recommended Architecture Approach</span>
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
+              {fixPackage.recommended_approach}
+            </p>
+          </div>
 
-        {/* 3. Test Plan & Canary Harness (True Gating) */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-3">
-          <div className="flex items-center justify-between">
+          {/* 3. Test Plan & Canary Harness */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
               3. Test Plan &amp; Canary Harness Configuration
             </h3>
-            {!fixPackage.unlocked && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
-                <Lock className="w-3.5 h-3.5" /> Gated Deliverable
-              </span>
-            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="font-semibold text-slate-500 block mb-1">Recommended Sample Size</span>
+                <span className="font-mono font-bold text-slate-900 text-sm">
+                  {fixPackage.test_plan.sample_size} cases
+                </span>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="font-semibold text-slate-500 block mb-1">Canary Traffic Allocation</span>
+                <span className="font-mono font-bold text-slate-900 text-sm">
+                  {fixPackage.test_plan.traffic_allocation_pct}% of live requests
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-700 block mb-1">Evaluation Criteria:</span>
+              <p className="text-slate-600 font-mono">{fixPackage.test_plan.evaluation_criteria}</p>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-700 block mb-1">Test Harness Instructions:</span>
+              <p className="text-slate-600 leading-relaxed font-sans">{fixPackage.test_plan.test_harness_instructions}</p>
+            </div>
           </div>
 
-          {!fixPackage.unlocked ? (
-            <div className="p-6 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-3">
-              <Lock className="w-6 h-6 text-slate-400 mx-auto" />
-              <div>
-                <h4 className="text-sm font-bold text-slate-900">Canary Test Plan &amp; Harness Gated</h4>
-                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                  Unlock this finding&apos;s Fix Package (${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}) to view exact sample size requirements, canary traffic allocation, evaluation criteria, and automated test harness instructions.
-                </p>
-              </div>
-              <button
-                type="button"
-                id="btn-unlock-testplan"
-                onClick={handleSimulatePayment}
-                className="px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-colors"
-              >
-                Unlock Fix Package &mdash; ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                  <span className="font-semibold text-slate-500 block mb-1">Recommended Sample Size</span>
-                  <span className="font-mono font-bold text-slate-900 text-sm">
-                    {fixPackage.test_plan.sample_size} cases
-                  </span>
-                </div>
-                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                  <span className="font-semibold text-slate-500 block mb-1">Canary Traffic Allocation</span>
-                  <span className="font-mono font-bold text-slate-900 text-sm">
-                    {fixPackage.test_plan.traffic_allocation_pct}% of live requests
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
-                <span className="font-semibold text-slate-700 block mb-1">Evaluation Criteria:</span>
-                <p className="text-slate-600 font-mono">{fixPackage.test_plan.evaluation_criteria}</p>
-              </div>
-
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
-                <span className="font-semibold text-slate-700 block mb-1">Test Harness Instructions:</span>
-                <p className="text-slate-600 leading-relaxed font-sans">{fixPackage.test_plan.test_harness_instructions}</p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* 4. Acceptance Criteria Checklist (True Gating) */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-3">
-          <div className="flex items-center justify-between">
+          {/* 4. Acceptance Criteria Checklist */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
               4. Acceptance Criteria Checklist
             </h3>
-            {!fixPackage.unlocked && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
-                <Lock className="w-3.5 h-3.5" /> Gated Deliverable
-              </span>
-            )}
-          </div>
 
-          {!fixPackage.unlocked ? (
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center">
-              <p className="text-xs text-slate-500">
-                Acceptance criteria checklist will unlock with the Fix Package (${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}).
-              </p>
-            </div>
-          ) : (
             <div className="space-y-2">
               {fixPackage.acceptance_criteria.map((crit, idx) => (
                 <div key={idx} className="flex items-start gap-2.5 text-xs text-slate-700">
@@ -264,31 +262,31 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
                 </div>
               ))}
             </div>
-          )}
-        </div>
+          </div>
 
-        {/* 5. Rollback Plan */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-            <span>5. Rapid Rollback Protocol</span>
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
-            {fixPackage.rollback_plan}
-          </p>
-        </div>
+          {/* 5. Rollback Plan */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              <span>5. Rapid Rollback Protocol</span>
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+              {fixPackage.rollback_plan}
+            </p>
+          </div>
 
-        {/* 6. Verification Protocol */}
-        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <RefreshCw className="w-4 h-4 text-teal-600" />
-            <span>6. Verification Protocol</span>
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
-            {fixPackage.verification_instructions}
-          </p>
+          {/* 6. Verification Protocol */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200 space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <RefreshCw className="w-4 h-4 text-teal-600" />
+              <span>6. Verification Protocol</span>
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+              {fixPackage.verification_instructions}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Footer / Progression CTA */}
       <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">

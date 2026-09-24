@@ -59,7 +59,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
       <div>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-mono uppercase tracking-wider text-teal-700 font-semibold">
-            Step 4: Empirical Post-Deployment Verification (VERIFY)
+            Empirical Post-Deployment Verification
           </span>
           <ProvenanceBadge provenance={isVerified ? 'VERIFIED' : 'ESTIMATED'} size="sm" />
         </div>
@@ -213,13 +213,20 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                       <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-800 font-mono">
                         Step 3: Verified Outcome Fee Evaluation
                       </h3>
+                      {verificationState.is_simulated && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 uppercase tracking-wide">
+                          Demo / Simulation Telemetry
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
                       Pay once, only after verification &bull; Capped at {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)} month of verified savings
                     </p>
                   </div>
                   <div className="text-right">
-                    <span className="text-[11px] uppercase tracking-wider font-mono text-slate-500 block">Final One-Time Fee</span>
+                    <span className="text-[11px] uppercase tracking-wider font-mono text-slate-500 block">
+                      {verificationState.is_simulated ? 'Simulated One-Time Fee' : 'Final One-Time Fee'}
+                    </span>
                     <span className="text-2xl font-extrabold font-mono text-emerald-700">
                       ${outcome.finalOutcomeFeeUsd.toFixed(2)}
                     </span>
@@ -297,7 +304,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
         {isBaseline ? (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h4 className="text-sm font-bold text-slate-900">Step 1: Mark Deployment as Live</h4>
+              <h4 className="text-sm font-bold text-slate-900">Lifecycle Action: Mark Deployment as Live</h4>
               <p className="text-xs text-slate-500 mt-0.5">
                 Sets the deployment timestamp. Subsequent telemetry events will be evaluated in the observation window.
               </p>
