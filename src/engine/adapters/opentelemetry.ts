@@ -198,6 +198,7 @@ export class OpenTelemetryAdapter {
           span_name: span.name || '',
           gen_ai_system: provider,
         },
+        is_simulated: false,
       });
     }
 

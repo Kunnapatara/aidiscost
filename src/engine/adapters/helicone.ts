@@ -153,6 +153,7 @@ export class HeliconeAdapter {
         cost_provenance: costValidation.cost_provenance,
         cost_confidence: costValidation.cost_confidence,
         metadata: safeMeta,
+        is_simulated: false,
       });
     }
 

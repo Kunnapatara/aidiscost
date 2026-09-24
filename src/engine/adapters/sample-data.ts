@@ -228,6 +228,11 @@ export function generateSampleDataset(): NormalizedIngestResult {
     });
   }
 
+  // Explicitly mark all generated demo/sample events as simulated
+  for (const ev of events) {
+    ev.is_simulated = true;
+  }
+
   return {
     source: 'custom_logs',
     events,

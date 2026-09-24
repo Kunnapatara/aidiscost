@@ -61,6 +61,9 @@ export interface AIEvent {
   // Metadata & Quality Signal
   metadata: Record<string, string | number | boolean>;
   quality_signal?: number; // 0.0 - 1.0 (from evals or feedback if present)
+
+  // Simulation & Provenance
+  is_simulated?: boolean; // false for authoritative production ingestion, true for simulation/demo
 }
 
 /**
@@ -153,6 +156,19 @@ export interface FixPackage {
 }
 
 /**
+ * Observation Window Empirical Result
+ */
+export interface VerificationObservationResult {
+  pre_cost_per_call_usd: number;
+  post_cost_per_call_usd: number;
+  observed_reduction_pct: number;
+  annualized_realized_savings_usd: number;
+  verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
+  verification_notes: string;
+  is_authoritative?: boolean;
+}
+
+/**
  * Post-Deployment Verification State
  */
 export interface VerificationState {
@@ -170,14 +186,8 @@ export interface VerificationState {
     end: string;
     sample_event_count: number;
   };
-  observed_result?: {
-    pre_cost_per_call_usd: number;
-    post_cost_per_call_usd: number;
-    observed_reduction_pct: number;
-    annualized_realized_savings_usd: number;
-    verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
-    verification_notes: string;
-  };
+  observed_result?: VerificationObservationResult;
+  simulated_result?: VerificationObservationResult;
   is_simulated?: boolean;
 }
 

@@ -434,13 +434,11 @@ export default function App() {
         cost_provenance: 'CALCULATED',
         cost_confidence: 'HIGH',
         metadata: { post_deployment: true },
+        is_simulated: true,
       });
     }
 
-    const newVerifyState = {
-      ...evaluateVerification(currentVerifyState, fnd, simulatedPostEvents),
-      is_simulated: true,
-    };
+    const newVerifyState = evaluateVerification(currentVerifyState, fnd, simulatedPostEvents);
 
     setVerificationStates((prev) => {
       const updated = new Map(prev);

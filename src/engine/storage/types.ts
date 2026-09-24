@@ -147,7 +147,18 @@ export interface PersistedVerificationState {
     annualized_realized_savings_usd: number;
     verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
     verification_notes: string;
+    is_authoritative?: boolean;
   };
+  simulated_result?: {
+    pre_cost_per_call_usd: number;
+    post_cost_per_call_usd: number;
+    observed_reduction_pct: number;
+    annualized_realized_savings_usd: number;
+    verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
+    verification_notes: string;
+    is_authoritative?: boolean;
+  };
+  is_simulated?: boolean;
 }
 
 /**

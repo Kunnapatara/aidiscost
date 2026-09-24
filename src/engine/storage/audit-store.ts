@@ -286,7 +286,27 @@ export class AuditStore {
           ? rawResult.verification_confidence
           : 'MEDIUM') as 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION',
         verification_notes: String(rawResult.verification_notes || ''),
+        is_authoritative: Boolean(rawResult.is_authoritative),
       };
+    }
+
+    const rawSimResult = raw.simulated_result as Record<string, unknown> | undefined;
+    if (rawSimResult && typeof rawSimResult === 'object') {
+      clean.simulated_result = {
+        pre_cost_per_call_usd: Number(rawSimResult.pre_cost_per_call_usd) || 0,
+        post_cost_per_call_usd: Number(rawSimResult.post_cost_per_call_usd) || 0,
+        observed_reduction_pct: Number(rawSimResult.observed_reduction_pct) || 0,
+        annualized_realized_savings_usd: Number(rawSimResult.annualized_realized_savings_usd) || 0,
+        verification_confidence: (['HIGH', 'MEDIUM', 'INSUFFICIENT_OBSERVATION'].includes(rawSimResult.verification_confidence as string)
+          ? rawSimResult.verification_confidence
+          : 'MEDIUM') as 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION',
+        verification_notes: String(rawSimResult.verification_notes || ''),
+        is_authoritative: false,
+      };
+    }
+
+    if (typeof raw.is_simulated === 'boolean') {
+      clean.is_simulated = raw.is_simulated;
     }
 
     return clean;

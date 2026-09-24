@@ -4,6 +4,8 @@
  */
 
 import { CommercialPricingConstants, OutcomeFeeCalculation, CommercialROIExample } from '../../types/commercial';
+import { Finding, VerificationState } from '../../types/domain';
+import { isAuthoritativeVerified, getAuthoritativeVerifiedSavings } from '../verification/comparator';
 
 export const COMMERCIAL_PRICING: CommercialPricingConstants = {
   FREE_AUDIT_PRICE_USD: 0,
@@ -147,3 +149,40 @@ export function generateCommercialROIExample(): CommercialROIExample {
       "Economic illustration based on the example's verified monthly saving continuing at the same rate. Not a guarantee of future results.",
   };
 }
+
+/**
+ * Authoritatively calculates the commercial outcome fee from a Finding and VerificationState.
+ * Guarantees that unverified or simulated telemetry cannot produce a commercial obligation.
+ */
+export function calculateAuthoritativeOutcomeFee(
+  verificationState: VerificationState,
+  finding: Finding
+): OutcomeFeeCalculation {
+  const originalEstimate = (finding.annualized_projection_usd && finding.annualized_projection_usd > 0)
+    ? Number((finding.annualized_projection_usd / 12).toFixed(2))
+    : 0;
+
+  if (!isAuthoritativeVerified(verificationState) || finding.is_sample_data === true) {
+    return {
+      verifiedMonthlyRunRateUsd: 0,
+      verifiedAnnualizedSavingsUsd: 0,
+      rawOutcomeFeeUsd: 0,
+      capAmountUsd: 0,
+      originalEstimatedMonthlySavingsUsd: originalEstimate,
+      realizedRatio: 0,
+      protectionTriggered: false,
+      protectionReason: verificationState.is_simulated
+        ? 'Telemetric evaluation was simulated (demo). Authoritative commercial billing requires genuine production verification.'
+        : 'Finding has not reached an authoritative VERIFIED_RESULT stage.',
+      finalOutcomeFeeUsd: 0,
+      isPayable: false,
+      methodologyDescription: 'Non-authoritative or unverified telemetry. No outcome fee is payable.',
+    };
+  }
+
+  const verifiedAnnualSavings = getAuthoritativeVerifiedSavings(verificationState);
+  const verifiedMonthlySavings = verifiedAnnualSavings / 12;
+
+  return calculateOutcomeFee(verifiedMonthlySavings, originalEstimate);
+}
+

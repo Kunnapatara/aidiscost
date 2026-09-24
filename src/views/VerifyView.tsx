@@ -4,10 +4,10 @@
  */
 
 import React from 'react';
-import { Finding, VerificationState, AIEvent } from '../types/domain';
+import { Finding, VerificationState } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
-import { ArrowLeft, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck, Clock, Layers } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical } from 'lucide-react';
 import { calculateOutcomeFee, COMMERCIAL_PRICING } from '../engine/billing/outcome';
 
 interface VerifyViewProps {
@@ -28,7 +28,16 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
   const stage = verificationState.stage;
   const isBaseline = stage === 'BASELINE';
   const isObserving = stage === 'OBSERVATION_ACTIVE';
-  const isVerified = stage === 'VERIFIED_RESULT';
+  const isVerified = stage === 'VERIFIED_RESULT' && !verificationState.is_simulated;
+  const isSimulated = Boolean(verificationState.is_simulated);
+
+  // Active observation result to display
+  const activeResult = isVerified
+    ? verificationState.observed_result
+    : (isSimulated && verificationState.simulated_result ? verificationState.simulated_result : verificationState.observed_result);
+
+  const hasSimulationResult = isSimulated && Boolean(verificationState.simulated_result);
+  const showFeeCard = isVerified || (hasSimulationResult && (activeResult?.observed_reduction_pct || 0) >= 10);
 
   const stages = [
     { key: 'BASELINE', label: '1. Baseline' },
@@ -61,26 +70,28 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
           <span className="text-xs font-mono uppercase tracking-wider text-teal-700 font-semibold">
             Empirical Post-Deployment Verification
           </span>
-          <ProvenanceBadge provenance={isVerified ? 'VERIFIED' : 'ESTIMATED'} size="sm" />
+          <ProvenanceBadge provenance={isVerified ? 'VERIFIED' : (isSimulated ? 'ESTIMATED' : 'ESTIMATED')} size="sm" />
+          {isSimulated && (
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 uppercase tracking-wide flex items-center gap-1">
+              <FlaskConical className="w-3 h-3" />
+              Demo / Simulation Telemetry
+            </span>
+          )}
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
           Verify Savings: {finding.title}
         </h1>
         <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-          Conservative validation engine. We do not declare savings verified until sustained post-deployment
-          telemetry proves unit-cost reduction across comparable production traffic.
+          Conservative validation engine. Authoritative verification requires sustained post-deployment
+          telemetry proving unit-cost reduction across comparable production traffic.
         </p>
       </div>
 
       {/* 4-Stage Verification Progression Bar */}
       <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-xs">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {stages.map((s, idx) => {
-            const isCurrent =
-              s.key === stage ||
-              (stage === 'OBSERVATION_ACTIVE' && s.key === 'CUSTOMER_DEPLOYED') ||
-              (stage === 'VERIFIED_RESULT' && (s.key === 'CUSTOMER_DEPLOYED' || s.key === 'OBSERVATION_ACTIVE'));
-
+          {stages.map((s) => {
+            const isCurrent = stage === s.key;
             const isPassed =
               (stage === 'OBSERVATION_ACTIVE' && (s.key === 'BASELINE' || s.key === 'CUSTOMER_DEPLOYED')) ||
               (stage === 'VERIFIED_RESULT' && s.key !== 'VERIFIED_RESULT');
@@ -89,7 +100,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
               <div
                 key={s.key}
                 className={`p-3 rounded-xl border text-xs font-semibold transition-all ${
-                  stage === s.key
+                  isCurrent
                     ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
                     : isPassed
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
@@ -99,7 +110,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                 <div className="flex items-center gap-1.5 mb-1">
                   {isPassed ? (
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  ) : stage === s.key ? (
+                  ) : isCurrent ? (
                     <Clock className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
                   ) : (
                     <span className="w-2 h-2 rounded-full bg-slate-300" />
@@ -144,26 +155,28 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
             <MetricTile
               id="metric-verify-pre"
               label="Pre-Deployment Unit Cost"
-              value={`$${verificationState.observed_result?.pre_cost_per_call_usd.toFixed(4) || '0.00'}`}
+              value={`$${activeResult?.pre_cost_per_call_usd.toFixed(4) || '0.00'}`}
               subtext="Historical baseline per call"
               provenance="CALCULATED"
             />
             <MetricTile
               id="metric-verify-post"
-              label="Post-Deployment Unit Cost"
-              value={`$${verificationState.observed_result?.post_cost_per_call_usd.toFixed(4) || '0.00'}`}
-              subtext={`Across ${verificationState.observation_window?.sample_event_count || 0} observed events`}
+              label={isSimulated ? 'Post-Deployment Unit Cost (Simulated)' : 'Post-Deployment Unit Cost'}
+              value={`$${activeResult?.post_cost_per_call_usd.toFixed(4) || '0.00'}`}
+              subtext={`${isSimulated ? 'Simulated across' : 'Across'} ${verificationState.observation_window?.sample_event_count || 0} observed events`}
               provenance={isVerified ? 'VERIFIED' : 'ESTIMATED'}
               highlight={isVerified}
             />
             <MetricTile
               id="metric-verify-realized"
-              label="Empirical Unit Reduction"
-              value={`${verificationState.observed_result?.observed_reduction_pct || 0}%`}
+              label={isSimulated ? 'Empirical Unit Reduction (Simulated)' : 'Empirical Unit Reduction'}
+              value={`${activeResult?.observed_reduction_pct || 0}%`}
               subtext={
                 isVerified
-                  ? `Sustained annual savings: $${verificationState.observed_result?.annualized_realized_savings_usd.toLocaleString()}`
-                  : 'Requires >= 15 events threshold'
+                  ? `Sustained annual savings: $${activeResult?.annualized_realized_savings_usd.toLocaleString()}`
+                  : (isSimulated
+                      ? `Simulated delta: $${activeResult?.annualized_realized_savings_usd.toLocaleString()}/yr`
+                      : 'Requires >= 15 events threshold')
               }
               provenance={isVerified ? 'VERIFIED' : 'ESTIMATED'}
             />
@@ -174,7 +187,9 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
             className={`p-5 rounded-2xl border ${
               isVerified
                 ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
-                : 'bg-amber-50/70 border-amber-200 text-amber-950'
+                : isSimulated
+                ? 'bg-amber-50/70 border-amber-200 text-amber-950'
+                : 'bg-slate-50 border-slate-200 text-slate-800'
             }`}
           >
             <div className="flex items-center gap-2 mb-2 font-bold text-xs uppercase tracking-wider">
@@ -182,6 +197,11 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                 <>
                   <ShieldCheck className="w-4 h-4 text-emerald-700" />
                   <span>Verified Result: Empirical Confidence High</span>
+                </>
+              ) : isSimulated ? (
+                <>
+                  <FlaskConical className="w-4 h-4 text-amber-700" />
+                  <span>Observation Active &mdash; Demo / Simulation Telemetry Preview</span>
                 </>
               ) : (
                 <>
@@ -191,29 +211,29 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
               )}
             </div>
             <p className="text-xs sm:text-sm leading-relaxed">
-              {verificationState.observed_result?.verification_notes}
+              {activeResult?.verification_notes}
             </p>
           </div>
 
-          {/* Outcome Fee Commercial Calculation (if verified) */}
-          {isVerified && (() => {
-            const verifiedAnnualSavings = verificationState.observed_result?.annualized_realized_savings_usd || 0;
-            const verifiedMonthlySavings = verifiedAnnualSavings / 12;
+          {/* Outcome Fee Commercial Calculation (if verified or simulation preview) */}
+          {showFeeCard && (() => {
+            const annualSavings = activeResult?.annualized_realized_savings_usd || 0;
+            const monthlySavings = annualSavings / 12;
             const estimatedMonthlySavings = (finding.annualized_projection_usd && finding.annualized_projection_usd > 0)
               ? Number((finding.annualized_projection_usd / 12).toFixed(2))
               : 0;
-            const outcome = calculateOutcomeFee(verifiedMonthlySavings, estimatedMonthlySavings);
+            const outcome = calculateOutcomeFee(monthlySavings, estimatedMonthlySavings);
 
             return (
-              <div className="p-6 rounded-2xl bg-white border-2 border-emerald-600 shadow-sm space-y-4">
+              <div className={`p-6 rounded-2xl bg-white border-2 ${isVerified ? 'border-emerald-600' : 'border-amber-400'} shadow-sm space-y-4`}>
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-800 font-mono">
+                      <span className={`inline-block w-2 h-2 rounded-full ${isVerified ? 'bg-emerald-600' : 'bg-amber-500'}`} />
+                      <h3 className={`text-xs font-bold uppercase tracking-wider font-mono ${isVerified ? 'text-emerald-800' : 'text-amber-900'}`}>
                         Step 3: Verified Outcome Fee Evaluation
                       </h3>
-                      {verificationState.is_simulated && (
+                      {isSimulated && (
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 uppercase tracking-wide">
                           Demo / Simulation Telemetry
                         </span>
@@ -225,13 +245,26 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                   </div>
                   <div className="text-right">
                     <span className="text-[11px] uppercase tracking-wider font-mono text-slate-500 block">
-                      {verificationState.is_simulated ? 'Simulated One-Time Fee' : 'Final One-Time Fee'}
+                      {isSimulated ? 'Simulated One-Time Fee' : 'Final One-Time Fee'}
                     </span>
-                    <span className="text-2xl font-extrabold font-mono text-emerald-700">
+                    <span className={`text-2xl font-extrabold font-mono ${isVerified ? 'text-emerald-700' : 'text-amber-700'}`}>
                       ${outcome.finalOutcomeFeeUsd.toFixed(2)}
                     </span>
                   </div>
                 </div>
+
+                {/* Simulation Disclaimer Banner */}
+                {isSimulated && (
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2">
+                    <FlaskConical className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">SIMULATION PREVIEW ONLY &mdash; Non-Authoritative</span>
+                      <span className="text-slate-600">
+                        This fee breakdown illustrates how the contract evaluates empirical observations. It is not an invoice or commercial charge. A payable outcome fee only applies upon genuine production verification from non-simulated telemetry.
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Mathematical breakdown */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs font-mono">
@@ -240,7 +273,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                     <span className="font-bold text-slate-900">${outcome.originalEstimatedMonthlySavingsUsd.toFixed(2)}</span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-slate-500 block text-[11px] font-sans">Verified Run-rate/mo</span>
+                    <span className="text-slate-500 block text-[11px] font-sans">{isSimulated ? 'Simulated Run-rate/mo' : 'Verified Run-rate/mo'}</span>
                     <span className="font-bold text-slate-900">${outcome.verifiedMonthlyRunRateUsd.toFixed(2)}</span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
@@ -259,7 +292,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                     <span className="text-slate-500 block text-[11px] font-sans">{COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)}-Mo Cap ({COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(1)}&times;)</span>
-                    <span className="font-bold text-emerald-700">${outcome.capAmountUsd.toFixed(2)}</span>
+                    <span className={`font-bold ${isVerified ? 'text-emerald-700' : 'text-amber-700'}`}>${outcome.capAmountUsd.toFixed(2)}</span>
                   </div>
                 </div>
 
@@ -268,18 +301,18 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                   <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
                     <span className="font-bold block mb-0.5">{(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% Protection Clause Triggered &mdash; Outcome Fee Waived ($0.00)</span>
                     <p className="leading-relaxed">
-                      {outcome.protectionReason || `Verified savings achieved ${(outcome.realizedRatio * 100).toFixed(1)}% of original estimate, which is below the ${(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% threshold. You owe $0.00 outcome fee.`}
+                      {outcome.protectionReason || `Savings achieved ${(outcome.realizedRatio * 100).toFixed(1)}% of original estimate, which is below the ${(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% threshold. Fee is waived to $0.00.`}
                     </p>
                   </div>
                 ) : (
-                  <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-950 text-xs flex items-center justify-between">
+                  <div className={`p-3.5 rounded-xl ${isVerified ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950' : 'bg-slate-50 border-slate-200 text-slate-800'} text-xs flex items-center justify-between`}>
                     <div>
                       <span className="font-bold block">{(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% Protection Condition Satisfied</span>
                       <span className="text-slate-600">
                         Achieved {(outcome.realizedRatio * 100).toFixed(1)}% of original estimate (threshold &ge; {(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}%). Fee bound by {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)}-month cap.
                       </span>
                     </div>
-                    <span className="text-xs font-mono font-bold text-emerald-700 px-2 py-1 bg-white rounded border border-emerald-200">
+                    <span className={`text-xs font-mono font-bold ${isVerified ? 'text-emerald-700 border-emerald-200' : 'text-amber-700 border-amber-200'} px-2 py-1 bg-white rounded border`}>
                       Cap Bound: ${outcome.finalOutcomeFeeUsd.toFixed(2)}
                     </span>
                   </div>
@@ -322,7 +355,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
           <div className="space-y-4">
             <div className="text-xs text-slate-600 leading-relaxed">
               Deployment timestamp logged: <strong className="font-mono text-slate-900">{verificationState.deployment_timestamp}</strong>.
-              Provide subsequent telemetry to evaluate whether the unit reduction holds true.
+              Telemetry events occurring after this timestamp are evaluated against baseline unit cost.
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -341,7 +374,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                 onClick={() => onIngestObservation(finding.id, 25)}
                 className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-colors shadow-xs"
               >
-                Simulate 25 Events (Triggers Empirical Verification)
+                Simulate 25 Events (Triggers Empirical Verification Preview)
               </button>
             </div>
           </div>
