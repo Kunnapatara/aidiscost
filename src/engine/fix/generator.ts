@@ -6,37 +6,51 @@
 import { Finding, FixPackage } from '../../types/domain';
 
 export function generateFixPackage(finding: Finding, isUnlocked: boolean = false): FixPackage {
+  // Derive projected monthly savings conservatively:
+  // If annualized projection is available (> 0), monthly projection is annualized / 12.
+  // Otherwise, monthly projection is held at 0.00 or observed window savings with explicit basis note.
+  const hasAnnualized = finding.annualized_projection_usd > 0;
+  const monthlyProjectionUsd = hasAnnualized
+    ? Number((finding.annualized_projection_usd / 12).toFixed(2))
+    : Number(finding.estimated_savings_usd.toFixed(2));
+
+  const projectionBasis = hasAnnualized
+    ? `Extrapolated run-rate projection: modeled monthly opportunity derived from annualized projection ($${finding.annualized_projection_usd.toFixed(2)} / 12 months) under constant-volume assumptions. Not an empirical guarantee or historical fact.`
+    : `Extrapolation withheld: telemetry observation window is insufficient to extrapolate a monthly run-rate. Value reflects observed window savings ($${finding.estimated_savings_usd.toFixed(2)}).`;
+
   switch (finding.rule_id) {
     case 'MODEL_RIGHT_SIZING':
       return {
         finding_id: finding.id,
         unlocked: isUnlocked,
         root_cause_hypothesis:
-          'Workload routing defaults to a frontier flagship model regardless of task complexity. For short classification, keyword extraction, and structured boolean validation tasks (<350 tokens), 90%+ of model capacity is unutilized.',
+          'Hypothesis: Application routing defaults to a frontier flagship model regardless of task complexity. For short classification, extraction, and structured validation calls matching observed token profiles, candidate distilled models may provide sufficient capability at lower catalog pricing.',
         recommended_approach:
-          'Implement conditional workload routing or tier migration. Replace the static model parameter with a task-based router, pointing classification prompts to gpt-4o-mini or claude-3-5-haiku while retaining flagship models exclusively for complex multi-step reasoning.',
+          'Recommended Approach: Implement conditional task-based routing or candidate tier migration. Evaluate candidate models (e.g. gpt-4o-mini, claude-3-5-haiku, gemini-flash) against task accuracy benchmarks on customer golden test sets while retaining flagship models for complex multi-step reasoning.',
         expected_impact: {
-          monthly_savings_usd: Number((finding.estimated_savings_usd * 30).toFixed(2)),
-          latency_delta_ms: -280, // faster
-          quality_risk: 'LOW',
+          monthly_savings_usd: monthlyProjectionUsd,
+          latency_delta_ms: 0, // Unmeasured; requires empirical benchmark measurement during canary evaluation
+          quality_risk: 'REQUIRES_BENCHMARK', // Truth-preserving status: quality equivalence cannot be assumed without benchmark evaluation
+          projection_basis: projectionBasis,
         },
         test_plan: {
-          sample_size: 250,
-          evaluation_criteria: 'Accuracy match >= 99.2% on golden classification benchmark suite.',
+          sample_size: Math.min(250, Math.max(50, finding.eligible_event_count)),
+          evaluation_criteria:
+            '[Template Benchmark] Candidate model completions achieve acceptable semantic equivalence and task accuracy on customer golden evaluation dataset.',
           traffic_allocation_pct: 10,
           test_harness_instructions:
-            'Deploy an A/B shadow-traffic proxy sending 10% of production traffic to candidate model. Log output schema and run automated semantic diff against baseline completions.',
+            '[Template Harness] Deploy an A/B or shadow-traffic evaluation harness routing 10% of non-critical requests to candidate model. Log outputs and execute automated schema validation and semantic diff against baseline completions.',
         },
         acceptance_criteria: [
-          'Classification F1-score matches or exceeds baseline within 0.5% tolerance across 250 test cases.',
-          'Average response latency improves by at least 150ms.',
-          'Zero schema validation or JSON parse failures in structured responses.',
-          'Monthly spend on target endpoint drops by over 80%.',
+          '[Template Criterion] Task accuracy and evaluation metrics meet customer-defined benchmark tolerance on task test set.',
+          '[Template Criterion] Latency distribution (p50 / p95) meets application SLA requirements under production load.',
+          '[Template Criterion] Zero schema validation or JSON parse failures in structured responses.',
+          '[Template Criterion] Observed unit-cost reduction on target workload conforms to catalog rate differential without regression.',
         ],
         verification_instructions:
-          'Run continuous observation for 48 hours post-deployment. Ensure error rates stay under 0.05% and cost per 1k transactions declines from $2.80 to under $0.35.',
+          'Conduct continuous observation over active post-deployment window. Authoritative verification requires at least 15 post-deployment events and sustained unit-cost reduction of at least 10.0% without error or latency regressions.',
         rollback_plan:
-          'Maintain an environment variable flag (AI_MODEL_ROUTING_OVERRIDE). In case of unexpected degradation or drift, toggle back to the original model without requiring a redeployment.',
+          'Maintain an application configuration or environment variable flag (e.g. AI_MODEL_ROUTING_OVERRIDE) to immediately toggle routing back to baseline model if benchmark degradation, error spikes, or schema failures are detected.',
       };
 
     case 'RETRY_ERROR_LOOP':
@@ -44,30 +58,32 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
         finding_id: finding.id,
         unlocked: isUnlocked,
         root_cause_hypothesis:
-          'Client SDK error handling lacks decorrelated exponential backoff and jitter. When the provider returns HTTP 429 (rate limit) or 500 (transient gateway timeout), clients trigger immediate synchronous retries within < 100ms, worsening throttle conditions and burning token allocations on aborted calls.',
+          'Hypothesis: Client SDK error handling lacks decorrelated exponential backoff and jitter. When provider APIs return HTTP 429 (rate limit) or 500 (transient timeout), clients trigger rapid consecutive retries, exacerbating throttling and incurring spend on aborted attempts.',
         recommended_approach:
-          'Configure a resilient retry policy with Full Jitter exponential backoff. Cap maximum retries at 3 attempts, start initial backoff at 1,000ms with a multiplier of 2.0 and random jitter, and attach a circuit breaker that halts calls after 5 consecutive failures.',
+          'Recommended Approach: Configure a resilient retry policy with Full Jitter exponential backoff. Cap maximum retries at 3 attempts, initialize backoff interval at 1,000ms with random jitter, and attach a circuit breaker that halts calls after consecutive service failures.',
         expected_impact: {
-          monthly_savings_usd: Number((finding.estimated_savings_usd * 30).toFixed(2)),
+          monthly_savings_usd: monthlyProjectionUsd,
           latency_delta_ms: 0,
-          quality_risk: 'NEGLIGIBLE',
+          quality_risk: 'NEGLIGIBLE', // Eliminating failed/aborted attempts does not alter completed responses
+          projection_basis: projectionBasis,
         },
         test_plan: {
-          sample_size: 100,
-          evaluation_criteria: 'Zero consecutive retry bursts exceeding 3 attempts in any 60-second window.',
+          sample_size: Math.min(50, Math.max(10, finding.eligible_event_count)),
+          evaluation_criteria:
+            '[Template Test] Zero unjittered consecutive retry bursts exceeding 3 attempts in any 60-second window during simulated error conditions.',
           traffic_allocation_pct: 100,
           test_harness_instructions:
-            'Simulate artificial HTTP 429 rate limit responses on a staging test suite. Validate that client waits at least 1.0s on attempt 1, 2.0s on attempt 2, and emits a structured circuit-breaker event rather than looping.',
+            '[Template Harness] Simulate synthetic HTTP 429 and 503 error responses in a staging test environment. Validate that client introduces exponential backoff with random jitter between attempts and trips circuit breaker rather than looping.',
         },
         acceptance_criteria: [
-          'Consecutive retries per failure event strictly capped at <= 3.',
-          'Exponential backoff with full random jitter enforced across all outbound LLM client calls.',
-          'Wasted spend from aborted retry storms reduced to $0.00.',
+          '[Template Criterion] Consecutive retry attempts per failure event are strictly capped at <= 3.',
+          '[Template Criterion] Exponential backoff with random jitter is enforced across outbound LLM client calls.',
+          '[Template Criterion] Potentially avoidable retry spend associated with rapid failure bursts is eliminated.',
         ],
         verification_instructions:
-          'Monitor telemetry error traces for 72 hours. Check that retry bursts (status 429/500 count > 2 in 10s) are eliminated from system dashboards.',
+          'Monitor telemetry error traces across active post-deployment observation window. Check that rapid consecutive 429/500 retry bursts are eliminated from production metrics.',
         rollback_plan:
-          'Revert client retry wrapper to previous configuration if circuit-breaker prematurely triggers during non-rate-limit network blips.',
+          'Revert client retry wrapper configuration if circuit breaker triggers prematurely during non-rate-limit transient network blips.',
       };
 
     case 'REPEATED_CALL_PATTERN':
@@ -75,30 +91,32 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
         finding_id: finding.id,
         unlocked: isUnlocked,
         root_cause_hypothesis:
-          'Stateless application architecture executes repetitive identical prompts (e.g. repeated user session lookups, FAQ queries, or static system prompt checks) multiple times within active user sessions without a temporary response cache.',
+          'Hypothesis: Application workflows execute repetitive identical prompts multiple times within the same user session or trace context without a temporary response cache.',
         recommended_approach:
-          'Implement an application-level response cache (e.g., Redis or in-memory LRU) keyed by SHA-256 of the prompt and model parameters with a TTL of 10 to 60 minutes for deterministic (temperature <= 0.2) workloads.',
+          'Recommended Approach: Implement an application-level response cache (e.g. Redis, Memcached, or in-memory LRU) keyed by SHA-256 of the prompt and execution parameters with a bounded TTL (e.g. 5 to 15 minutes) for deterministic workloads (temperature <= 0.2).',
         expected_impact: {
-          monthly_savings_usd: Number((finding.estimated_savings_usd * 30).toFixed(2)),
-          latency_delta_ms: -650, // instant cache hits
-          quality_risk: 'NEGLIGIBLE',
+          monthly_savings_usd: monthlyProjectionUsd,
+          latency_delta_ms: 0, // Latency improvement occurs on cache hits; requires empirical measurement
+          quality_risk: 'REQUIRES_BENCHMARK', // Truth-preserving: semantic invariance and cache invalidation safety must be verified
+          projection_basis: projectionBasis,
         },
         test_plan: {
-          sample_size: 150,
-          evaluation_criteria: 'Cache hit ratio >= 25% on recurring query paths with 0% data staleness.',
+          sample_size: Math.min(100, Math.max(20, finding.eligible_event_count)),
+          evaluation_criteria:
+            '[Template Test] Verified response cache returns valid completions for repeated identical prompts within TTL window without serving stale or incorrect data.',
           traffic_allocation_pct: 50,
           test_harness_instructions:
-            'Execute 50 synthetic test runs with 3 duplicate queries per session. Verify that call 1 queries provider API and calls 2 & 3 resolve in < 5ms from local cache.',
+            '[Template Harness] Execute automated test runs with recurring query patterns. Verify that initial query calls upstream provider and subsequent identical queries within TTL resolve from local cache without error.',
         },
         acceptance_criteria: [
-          'Exact prompt matches within active 15-minute trace context return cached completions with < 10ms latency.',
-          'Upstream API calls for identical requests drop by > 90%.',
-          'Zero duplicate token charges incurred on recurring query patterns.',
+          '[Template Criterion] Exact identical prompt executions within active workflow context return valid cached completions.',
+          '[Template Criterion] Cache invalidation and TTL policies prevent serving stale responses across sessions.',
+          '[Template Criterion] Duplicate provider token charges for repeated identical invocations are reduced without regression.',
         ],
         verification_instructions:
-          'Examine post-deployment cache metrics. Verify that cache hit count accounts for at least 80% of previously flagged repeated executions.',
+          'Examine post-deployment cache metrics to confirm reduction in repetitive upstream API calls for identical prompt executions without stale response complaints.',
         rollback_plan:
-          'Provide a cache-bypass header or configuration flag (CACHE_ENABLED=false) to disable cached responses immediately if dynamic prompt updates fail to invalidate properly.',
+          'Provide a cache-bypass header or configuration flag (e.g. CACHE_ENABLED=false) to immediately disable cached responses if dynamic prompt updates fail to invalidate properly.',
       };
   }
 }

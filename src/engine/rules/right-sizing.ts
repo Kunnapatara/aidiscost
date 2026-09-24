@@ -6,6 +6,7 @@
 import { AIEvent, Finding } from '../../types/domain';
 import { calculateEventCost, lookupModelPricing } from '../pricing/registry';
 import { annualizeSavings, TimeRange } from './annualization';
+import { isValidRuleEvent } from './validation';
 
 interface ModelCandidatePair {
   currentModel: string;
@@ -21,21 +22,21 @@ const RIGHT_SIZING_CANDIDATES: ModelCandidatePair[] = [
     candidateModel: 'gpt-4o-mini',
     maxAvgInputTokens: 400,
     maxAvgOutputTokens: 100,
-    reason: 'Workload exhibits short input and brief deterministic output suitable for gpt-4o-mini evaluation.',
+    reason: 'Observed workload exhibits short input and brief deterministic output compatible with gpt-4o-mini evaluation.',
   },
   {
     currentModel: 'gpt-4-turbo',
     candidateModel: 'gpt-4o-mini',
     maxAvgInputTokens: 500,
     maxAvgOutputTokens: 150,
-    reason: 'Legacy GPT-4 Turbo tier used for basic inference eligible for modern distilled model evaluation at 94% lower catalog rate.',
+    reason: 'Legacy GPT-4 Turbo tier used for basic inference eligible for modern distilled model evaluation at lower catalog rate.',
   },
   {
     currentModel: 'claude-3-5-sonnet',
     candidateModel: 'claude-3-5-haiku',
     maxAvgInputTokens: 450,
     maxAvgOutputTokens: 120,
-    reason: 'Short prompt classification or extraction task eligible for evaluation on Claude 3.5 Haiku at 73% lower catalog rate.',
+    reason: 'Short prompt classification or extraction task eligible for evaluation on Claude 3.5 Haiku at lower catalog rate.',
   },
   {
     currentModel: 'gemini-1.5-pro',
@@ -52,11 +53,17 @@ export function evaluateModelRightSizing(
   isSampleData: boolean,
   timeRange?: TimeRange
 ): Finding | null {
+  // Filter and validate events strictly
+  const validEvents: AIEvent[] = [];
+  for (const ev of events) {
+    if (!isValidRuleEvent(ev)) continue;
+    if (ev.status !== 'SUCCESS') continue;
+    validEvents.push(ev);
+  }
+
   // Group events by model
   const modelGroups = new Map<string, AIEvent[]>();
-  for (const ev of events) {
-    if (ev.status !== 'SUCCESS') continue;
-    if (ev.cost_provenance === 'UNPRICED') continue;
+  for (const ev of validEvents) {
     const m = ev.model.toLowerCase();
     const list = modelGroups.get(m) || [];
     list.push(ev);
@@ -72,7 +79,7 @@ export function evaluateModelRightSizing(
       }
     }
 
-    // Require sufficient statistical sample size
+    // Require sufficient sample size (at least 10 events)
     if (matchedEvents.length < 10) {
       continue;
     }
@@ -85,15 +92,30 @@ export function evaluateModelRightSizing(
       continue;
     }
 
+    // Verify candidate model pricing exists
+    const candidatePricing = lookupModelPricing(pair.candidateModel);
+    if (!candidatePricing) {
+      continue;
+    }
+
+    const currentPricing = lookupModelPricing(pair.currentModel);
+
     // Calculate deterministic spend comparison
     let baselineSpend = 0;
     let candidateSpend = 0;
+    let hasUnpricedOrEstimatedEvent = false;
 
     for (const ev of matchedEvents) {
       baselineSpend += ev.resolved_cost_usd;
+      if (ev.cost_provenance === 'UNPRICED' || ev.cost_provenance === 'UNKNOWN') {
+        hasUnpricedOrEstimatedEvent = true;
+      }
+
       const candidateCostResult = calculateEventCost(pair.candidateModel, ev.input_tokens, ev.output_tokens);
       if (candidateCostResult.is_priced && candidateCostResult.calculated_cost_usd !== undefined) {
         candidateSpend += candidateCostResult.calculated_cost_usd;
+      } else {
+        hasUnpricedOrEstimatedEvent = true;
       }
     }
 
@@ -108,20 +130,19 @@ export function evaluateModelRightSizing(
     const annualization = annualizeSavings(estimatedSavings, timeRange);
     const annualized = annualization.annualized_usd;
 
-    const sampleTraces = Array.from(new Set(matchedEvents.map(e => e.trace_id))).slice(0, 5);
+    const sampleTraces = Array.from(new Set(matchedEvents.map(e => e.trace_id))).filter(Boolean).slice(0, 5);
 
-    // Derive rates directly from authoritative pricing registry
-    const currentPricing = lookupModelPricing(pair.currentModel);
-    const candidatePricing = lookupModelPricing(pair.candidateModel);
-    const currentInRateStr = currentPricing ? `$${currentPricing.input_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
-    const candidateInRateStr = candidatePricing ? `$${candidatePricing.input_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
-    const currentOutRateStr = currentPricing ? `$${currentPricing.output_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
-    const candidateOutRateStr = candidatePricing ? `$${candidatePricing.output_per_million_usd.toFixed(2)}` : 'Catalog rate unpriced';
+    const currentInRateStr = currentPricing ? `$${currentPricing.input_per_million_usd.toFixed(2)}` : 'Unpriced';
+    const candidateInRateStr = `$${candidatePricing.input_per_million_usd.toFixed(2)}`;
+    const currentOutRateStr = currentPricing ? `$${currentPricing.output_per_million_usd.toFixed(2)}` : 'Unpriced';
+    const candidateOutRateStr = `$${candidatePricing.output_per_million_usd.toFixed(2)}`;
+
+    const costConfidence = (hasUnpricedOrEstimatedEvent || !currentPricing) ? 'MEDIUM' : 'HIGH';
 
     const assumptions = [
-      `Evaluation opportunity: candidate model ${pair.candidateModel} must be evaluated against task benchmarks to confirm acceptable output quality before migration.`,
-      'Token counts remain consistent with observed production distribution.',
-      'Requires canary benchmark test plan and task output evaluation prior to production migration.',
+      `Workload evaluation opportunity: candidate model ${pair.candidateModel} exhibits lower catalog pricing, but customer benchmark testing is required to confirm acceptable output quality before migration. Telemetry does not establish output equivalence.`,
+      'Observed token distribution is assumed to represent ongoing workload characteristics.',
+      'Canary deployment and task output evaluation are required prior to production adoption.',
     ];
     if (annualization.conservative_assumption) {
       assumptions.push(annualization.conservative_assumption);
@@ -132,10 +153,10 @@ export function evaluateModelRightSizing(
       audit_id: auditId,
       rule_id: 'MODEL_RIGHT_SIZING',
       title: 'Potential Model Right-Sizing Opportunity',
-      summary: `Detected ${matchedEvents.length} lightweight calls on ${pair.currentModel} (avg ${Math.round(avgIn)} in / ${Math.round(avgOut)} out tokens) eligible for ${pair.candidateModel} evaluation.`,
+      summary: `Observed ${matchedEvents.length} lightweight calls on ${pair.currentModel} (avg ${Math.round(avgIn)} in / ${Math.round(avgOut)} out tokens) with workload characteristics compatible with ${pair.candidateModel} evaluation.`,
       affected_scope: `${pair.currentModel} → ${pair.candidateModel}`,
       detection_confidence: 'HIGH',
-      cost_confidence: 'HIGH',
+      cost_confidence: costConfidence,
       savings_confidence: 'ESTIMATED',
       baseline_spend_usd: Number(baselineSpend.toFixed(4)),
       candidate_spend_usd: Number(candidateSpend.toFixed(4)),
@@ -143,7 +164,7 @@ export function evaluateModelRightSizing(
       potential_savings_pct: savingsPct,
       annualized_projection_usd: annualized,
       eligible_event_count: matchedEvents.length,
-      calculation_method: `Deterministic pricing delta: ${pair.currentModel} catalog rate vs ${pair.candidateModel} rate applied to observed token distribution. ${annualization.methodology_description}`,
+      calculation_method: `Deterministic pricing delta: ${pair.currentModel} catalog rate vs ${pair.candidateModel} candidate rate applied to observed token distribution. Candidate savings are estimated projections; quality preservation requires empirical benchmarking. ${annualization.methodology_description}`,
       assumptions,
       evidence: {
         affected_event_count: matchedEvents.length,
@@ -177,14 +198,14 @@ export function evaluateModelRightSizing(
             provenance: 'CALCULATED',
           },
           {
-            label: 'Observed Spend vs Opportunity',
+            label: 'Observed Spend vs Modeled Candidate Spend',
             current_value: `$${baselineSpend.toFixed(4)}`,
             target_value: `$${candidateSpend.toFixed(4)}`,
             provenance: 'ESTIMATED',
           },
         ],
         trace_samples: sampleTraces,
-        mathematical_proof: `Formula: Sum[ (Input_i * Rate_curr_in + Output_i * Rate_curr_out) - (Input_i * Rate_cand_in + Output_i * Rate_cand_out) ] using registry rates (${pair.currentModel} in: ${currentInRateStr}, out: ${currentOutRateStr} vs ${pair.candidateModel} in: ${candidateInRateStr}, out: ${candidateOutRateStr}) across ${matchedEvents.length} events = $${estimatedSavings.toFixed(4)} estimated reduction (${savingsPct}%).`,
+        mathematical_proof: `Formula: Sum[ (Input_i * Rate_curr_in + Output_i * Rate_curr_out) - (Input_i * Rate_cand_in + Output_i * Rate_cand_out) ] using registry rates (${pair.currentModel} in: ${currentInRateStr}, out: ${currentOutRateStr} vs ${pair.candidateModel} in: ${candidateInRateStr}, out: ${candidateOutRateStr}) across ${matchedEvents.length} events = $${estimatedSavings.toFixed(4)} estimated reduction (${savingsPct}%). Quality and task performance require benchmarking.`,
       },
       status: 'DETECTED',
       is_sample_data: isSampleData,

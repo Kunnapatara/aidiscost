@@ -143,6 +143,7 @@ export interface FixPackage {
     monthly_savings_usd: number;
     latency_delta_ms: number;
     quality_risk: 'NEGLIGIBLE' | 'LOW' | 'MEDIUM' | 'REQUIRES_BENCHMARK';
+    projection_basis?: string;
   };
   test_plan: {
     sample_size: number;
@@ -217,4 +218,6 @@ export interface AuditSummary {
   health: DataHealthReport;
   findings: Finding[];
   is_sample_data: boolean;
+  aggregate_is_deduplicated?: boolean;
+  deduplication_note?: string;
 }

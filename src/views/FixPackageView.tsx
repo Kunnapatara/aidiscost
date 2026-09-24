@@ -139,7 +139,11 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
           <span className="text-2xl font-bold font-mono text-emerald-700 tabular-nums">
             ${fixPackage.expected_impact.monthly_savings_usd.toFixed(2)}
           </span>
-          <p className="text-[11px] text-slate-500 mt-1">Estimated direct reduction at steady-state volume</p>
+          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+            {fixPackage.expected_impact.projection_basis
+              ? 'Modeled run-rate projection under constant volume'
+              : 'Estimated direct reduction at steady-state volume'}
+          </p>
         </div>
 
         <div className="p-4 rounded-xl bg-white border border-slate-200">
@@ -147,19 +151,31 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
             Expected Latency Delta
           </span>
           <span className="text-2xl font-bold font-mono text-slate-900 tabular-nums">
-            {fixPackage.expected_impact.latency_delta_ms} ms
+            {fixPackage.expected_impact.latency_delta_ms !== 0
+              ? `${fixPackage.expected_impact.latency_delta_ms} ms`
+              : 'Benchmark Req.'}
           </span>
-          <p className="text-[11px] text-slate-500 mt-1">Estimated turn-around variance</p>
+          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+            Requires empirical measurement during canary testing
+          </p>
         </div>
 
         <div className="p-4 rounded-xl bg-white border border-slate-200">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-1">
             Quality Risk Grade
           </span>
-          <span className="text-2xl font-bold font-mono text-slate-900">
-            {fixPackage.expected_impact.quality_risk}
+          <span className={`text-xl font-bold font-mono ${
+            fixPackage.expected_impact.quality_risk === 'REQUIRES_BENCHMARK'
+              ? 'text-amber-800'
+              : 'text-slate-900'
+          }`}>
+            {fixPackage.expected_impact.quality_risk.replace('_', ' ')}
           </span>
-          <p className="text-[11px] text-slate-500 mt-1">Evaluated by task complexity constraints</p>
+          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+            {fixPackage.expected_impact.quality_risk === 'REQUIRES_BENCHMARK'
+              ? 'Benchmark test required; quality cannot be assumed'
+              : 'Evaluated by task complexity constraints'}
+          </p>
         </div>
       </div>
 

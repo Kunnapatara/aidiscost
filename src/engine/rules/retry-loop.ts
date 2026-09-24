@@ -5,6 +5,7 @@
 
 import { AIEvent, Finding } from '../../types/domain';
 import { annualizeSavings, TimeRange } from './annualization';
+import { isValidRuleEvent } from './validation';
 
 export function evaluateRetryErrorLoop(
   events: AIEvent[],
@@ -12,8 +13,14 @@ export function evaluateRetryErrorLoop(
   isSampleData: boolean,
   timeRange?: TimeRange
 ): Finding | null {
+  // Filter and validate events strictly
+  const validEvents = events.filter(isValidRuleEvent);
+  if (validEvents.length < 4) {
+    return null;
+  }
+
   // Sort events chronologically
-  const sorted = [...events].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const sorted = [...validEvents].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   // Group by (trace_id OR prompt_hash)
   const burstGroups = new Map<string, AIEvent[]>();
@@ -27,8 +34,9 @@ export function evaluateRetryErrorLoop(
 
   const loopEvents: AIEvent[] = [];
   const burstIntervalsMs: number[] = [];
-  let wastedSpend = 0;
+  let observedFailedSpend = 0;
   let totalLoopBursts = 0;
+  let hasUnpricedOrEstimated = false;
 
   for (const [, group] of burstGroups.entries()) {
     if (group.length < 3) continue;
@@ -56,7 +64,10 @@ export function evaluateRetryErrorLoop(
             }
             for (const failed of errorAttempts) {
               loopEvents.push(failed);
-              wastedSpend += failed.resolved_cost_usd;
+              observedFailedSpend += failed.resolved_cost_usd;
+              if (failed.cost_provenance === 'UNPRICED' || failed.cost_provenance === 'UNKNOWN') {
+                hasUnpricedOrEstimated = true;
+              }
             }
             burstStart = i + 1;
           }
@@ -68,26 +79,28 @@ export function evaluateRetryErrorLoop(
   }
 
   // Require sufficient evidence
-  if (loopEvents.length < 4 || wastedSpend <= 0.001) {
+  if (loopEvents.length < 4 || observedFailedSpend <= 0.001) {
     return null;
   }
 
   const baselineSpend = loopEvents.reduce((s, e) => s + e.resolved_cost_usd, 0);
 
   // Annualized projection based strictly on actual observed telemetry window
-  const annualization = annualizeSavings(wastedSpend, timeRange);
+  const annualization = annualizeSavings(observedFailedSpend, timeRange);
   const annualized = annualization.annualized_usd;
 
-  const sampleTraces = Array.from(new Set(loopEvents.map(e => e.trace_id))).slice(0, 5);
+  const sampleTraces = Array.from(new Set(loopEvents.map(e => e.trace_id))).filter(Boolean).slice(0, 5);
 
   // Compute actual observed average interval between consecutive attempts across flagged bursts
   const avgIntervalSec = burstIntervalsMs.length > 0
     ? Number((burstIntervalsMs.reduce((a, b) => a + b, 0) / burstIntervalsMs.length / 1000).toFixed(1))
     : 0;
 
+  const costConfidence = hasUnpricedOrEstimated ? 'MEDIUM' : 'HIGH';
+
   const assumptions = [
-    'Failed intermediate retry tokens (HTTP 429 / HTTP 500) yield zero downstream user value.',
-    'Implementation of client-side backoff and circuit-breaker will eliminate redundant retry storms.',
+    'Hypothesis: Failed intermediate retry attempts (HTTP 429 / HTTP 500) within rapid burst intervals may yield zero downstream user value; downstream task idempotency and impact must be evaluated.',
+    'Implementation of client-side exponential backoff with full jitter and circuit breakers is assumed to eliminate redundant retry storms without dropping legitimate traffic.',
   ];
   if (annualization.conservative_assumption) {
     assumptions.push(annualization.conservative_assumption);
@@ -98,18 +111,18 @@ export function evaluateRetryErrorLoop(
     audit_id: auditId,
     rule_id: 'RETRY_ERROR_LOOP',
     title: 'Potential Retry / Error Loop',
-    summary: `Identified ${loopEvents.length} unbacked retry attempts across ${totalLoopBursts} bursts exhibiting rapid consecutive 429/500 errors (avg interval: ${avgIntervalSec.toFixed(1)}s) without jittered exponential backoff.`,
+    summary: `Identified ${loopEvents.length} rapid retry attempts across ${totalLoopBursts} bursts exhibiting consecutive 429/500 errors (avg interval: ${avgIntervalSec.toFixed(1)}s) without jittered exponential backoff. Spend on failed attempts represents a potential recovery opportunity.`,
     affected_scope: `${loopEvents[0]?.model || 'LLM API'} burst retries`,
     detection_confidence: 'HIGH',
-    cost_confidence: 'HIGH',
-    savings_confidence: 'HIGH',
+    cost_confidence: costConfidence,
+    savings_confidence: 'ESTIMATED',
     baseline_spend_usd: Number(baselineSpend.toFixed(4)),
     candidate_spend_usd: 0.0000,
-    estimated_savings_usd: Number(wastedSpend.toFixed(4)),
+    estimated_savings_usd: Number(observedFailedSpend.toFixed(4)),
     potential_savings_pct: 100.0,
     annualized_projection_usd: annualized,
     eligible_event_count: loopEvents.length,
-    calculation_method: `Summation of billed tokens on failed retry attempts within rapid burst windows (consecutive failures in ≤60s sliding window). ${annualization.methodology_description}`,
+    calculation_method: `Summation of billed tokens on failed retry attempts within rapid burst windows (consecutive failures in ≤60s sliding window). Potential recoverable spend is an estimated projection. ${annualization.methodology_description}`,
     assumptions,
     evidence: {
       affected_event_count: loopEvents.length,
@@ -137,14 +150,20 @@ export function evaluateRetryErrorLoop(
           provenance: 'CALCULATED',
         },
         {
-          label: 'Wasted Burst Spend',
-          current_value: `$${wastedSpend.toFixed(4)}`,
+          label: 'Observed Failed Retry Spend',
+          current_value: `$${observedFailedSpend.toFixed(4)}`,
           target_value: `$0.0000`,
           provenance: 'CALCULATED',
         },
+        {
+          label: 'Potential Avoidable Retry Spend',
+          current_value: `$${observedFailedSpend.toFixed(4)}`,
+          target_value: `$0.0000`,
+          provenance: 'ESTIMATED',
+        },
       ],
       trace_samples: sampleTraces,
-      mathematical_proof: `Formula: Sum[ Cost_failed_retry_i ] where status in ('ERROR', 'RATE_LIMITED') in consecutive burst windows (sliding window ≤60s, observed average attempt interval: ${avgIntervalSec.toFixed(1)}s) = $${wastedSpend.toFixed(4)} recoverable spend across ${loopEvents.length} aborted attempts.`,
+      mathematical_proof: `Formula: Sum[ Cost_failed_retry_i ] where status in ('ERROR', 'RATE_LIMITED') in consecutive burst windows (sliding window ≤60s, observed average attempt interval: ${avgIntervalSec.toFixed(1)}s) = $${observedFailedSpend.toFixed(4)} observed spend on failed attempts. Potential recoverable savings estimated at $${observedFailedSpend.toFixed(4)} under hypothesis of zero downstream value.`,
     },
     status: 'DETECTED',
     is_sample_data: isSampleData,

@@ -18,32 +18,40 @@ export interface AnnualizationResult {
 }
 
 /**
- * Minimum observation duration required to extrapolate annual figures (1 hour).
+ * Minimum observation duration required to extrapolate annual figures (1.0 hour).
  * Windows under 1 hour are too narrow to yield a truthful annual projection.
  */
 export const MIN_ANNUALIZATION_HOURS = 1.0;
+
+/**
+ * Maximum reasonable observation duration (10 years = 3650 days).
+ * Windows exceeding this indicate corrupted timestamps or clock skew.
+ */
+export const MAX_ANNUALIZATION_DAYS = 3650;
 
 /**
  * Annualize observed savings based strictly on the actual telemetry time range.
  * Formula: (observed_savings_usd / observed_days) * 365
  * 
  * Rules:
- * 1. Zero observed savings -> $0.00 projection.
+ * 1. Zero, negative, NaN, or non-finite observed savings -> $0.00 projection.
  * 2. Missing, zero, negative, or invalid time range -> $0.00 projection with conservative assumption.
  * 3. Narrow window (< 1 hour) -> $0.00 projection with insufficient observation window assumption.
- * 4. Observed window >= 1 hour -> (observed_savings_usd / observed_days) * 365.
+ * 4. Excessively long or corrupt window (> 10 years) -> $0.00 projection.
+ * 5. Observed window >= 1 hour -> (observed_savings_usd / observed_days) * 365.
+ * 6. Explicitly frames result as an extrapolated run-rate projection, not historical fact or guarantee.
  */
 export function annualizeSavings(
   observedSavingsUsd: number,
   timeRange?: TimeRange
 ): AnnualizationResult {
-  if (observedSavingsUsd <= 0) {
+  if (!Number.isFinite(observedSavingsUsd) || observedSavingsUsd <= 0) {
     return {
       annualized_usd: 0,
       observed_duration_hours: 0,
       observed_duration_days: 0,
       is_annualized: false,
-      methodology_description: 'Zero observed savings to extrapolate.',
+      methodology_description: 'Zero or non-positive observed savings to extrapolate; annualized projection withheld.',
     };
   }
 
@@ -61,14 +69,14 @@ export function annualizeSavings(
   const startTime = new Date(timeRange.start).getTime();
   const endTime = new Date(timeRange.end).getTime();
 
-  if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
     return {
       annualized_usd: 0,
       observed_duration_hours: 0,
       observed_duration_days: 0,
       is_annualized: false,
-      methodology_description: 'Observation window duration is zero or invalid.',
-      conservative_assumption: 'Observation window has non-positive duration; annualized projection held at $0.00.',
+      methodology_description: 'Observation window duration is non-positive or invalid.',
+      conservative_assumption: 'Observation window contains invalid or inverted timestamps; annualized projection held at $0.00.',
     };
   }
 
@@ -88,13 +96,36 @@ export function annualizeSavings(
     };
   }
 
-  const annualized = Number(((observedSavingsUsd / durationDays) * 365).toFixed(2));
+  if (durationDays > MAX_ANNUALIZATION_DAYS) {
+    return {
+      annualized_usd: 0,
+      observed_duration_hours: Number(durationHours.toFixed(2)),
+      observed_duration_days: Number(durationDays.toFixed(4)),
+      is_annualized: false,
+      methodology_description: `Observation window exceeds maximum threshold (${MAX_ANNUALIZATION_DAYS} days); likely clock skew or timestamp corruption.`,
+      conservative_assumption: 'Observation window duration is improbably large; annualized projection held at $0.00.',
+    };
+  }
+
+  const rawAnnualized = (observedSavingsUsd / durationDays) * 365;
+  if (!Number.isFinite(rawAnnualized) || rawAnnualized < 0) {
+    return {
+      annualized_usd: 0,
+      observed_duration_hours: Number(durationHours.toFixed(2)),
+      observed_duration_days: Number(durationDays.toFixed(4)),
+      is_annualized: false,
+      methodology_description: 'Mathematical calculation produced non-finite annualized result.',
+    };
+  }
+
+  const annualized = Number(rawAnnualized.toFixed(2));
 
   return {
     annualized_usd: annualized,
     observed_duration_hours: Number(durationHours.toFixed(2)),
     observed_duration_days: Number(durationDays.toFixed(4)),
     is_annualized: true,
-    methodology_description: `Observed recovery opportunity of $${observedSavingsUsd.toFixed(2)} across ${durationHours.toFixed(1)} hours (${durationDays.toFixed(2)} days) annualized to 365 calendar days (($${observedSavingsUsd.toFixed(2)} / ${durationDays.toFixed(3)} days) * 365).`,
+    methodology_description: `Extrapolated run-rate projection: modeled annual opportunity of $${annualized.toFixed(2)} based on observed $${observedSavingsUsd.toFixed(2)} across ${durationHours.toFixed(1)} hours (${durationDays.toFixed(2)} days) extrapolated to 365 calendar days (($${observedSavingsUsd.toFixed(2)} / ${durationDays.toFixed(3)} days) * 365). Extrapolated projection under constant-volume assumptions; not a historical fact or guaranteed savings.`,
+    conservative_assumption: 'Annualized projection assumes observed traffic distribution and opportunity rate remain constant across 365 days; changes in seasonality, model catalog pricing, or workload volume will affect realized annual outcome.',
   };
 }

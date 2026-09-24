@@ -63,10 +63,10 @@ export const AuditSummaryView: React.FC<AuditSummaryViewProps> = ({
         />
         <MetricTile
           id="metric-observed-opportunity"
-          label="Observed Opportunity"
+          label="Sum of Opportunity Estimates"
           value={`$${audit.potential_savings_usd.toFixed(2)}`}
-          subtext={`${audit.findings.length} high-confidence patterns detected`}
-          provenance="CALCULATED"
+          subtext={`${audit.findings.length} patterns detected (potentially overlapping)`}
+          provenance="ESTIMATED"
           trend={
             audit.total_spend_usd > 0
               ? {
@@ -90,9 +90,7 @@ export const AuditSummaryView: React.FC<AuditSummaryViewProps> = ({
       <div className="p-4 rounded-xl bg-slate-100 border border-slate-200 text-xs text-slate-600 flex items-start gap-2.5">
         <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
         <div>
-          <strong>Accounting Transparency Guardrail:</strong> Observed opportunity reflects exact token
-          and rate calculations from ingested telemetry. Annualized figures are modeled projections, not
-          past realized savings. Realized savings are confirmed only through post-deployment verification.
+          <strong>Accounting Transparency Guardrail:</strong> The aggregate opportunity reflects the sum of individually detected optimization estimates. Because distinct optimization patterns (such as right-sizing, caching, and retry handling) may address overlapping execution subsets, this total is an upper-bound scenario, not a deduplicated or guaranteed portfolio recovery. Annualized figures are modeled projections under constant-volume assumptions, not past realized savings. Realized savings are confirmed only through post-deployment verification.
         </div>
       </div>
 

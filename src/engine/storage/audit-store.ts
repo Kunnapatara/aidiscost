@@ -229,6 +229,7 @@ export class AuditStore {
         quality_risk: (['NEGLIGIBLE', 'LOW', 'MEDIUM', 'REQUIRES_BENCHMARK'].includes(rawImpact.quality_risk as string)
           ? rawImpact.quality_risk
           : 'LOW') as 'NEGLIGIBLE' | 'LOW' | 'MEDIUM' | 'REQUIRES_BENCHMARK',
+        projection_basis: rawImpact.projection_basis ? String(rawImpact.projection_basis) : undefined,
       },
       test_plan: {
         sample_size: Number(rawTestPlan.sample_size) || 0,
@@ -359,6 +360,8 @@ export class AuditStore {
       health: healthReport,
       findings: persistedFindings,
       is_sample_data: Boolean(auditSummary.is_sample_data),
+      aggregate_is_deduplicated: Boolean(auditSummary.aggregate_is_deduplicated),
+      deduplication_note: auditSummary.deduplication_note ? String(auditSummary.deduplication_note) : undefined,
     };
 
     return {
