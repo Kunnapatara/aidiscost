@@ -49,7 +49,7 @@ export function generateFixPackage(finding: Finding, isUnlocked: boolean = false
           '[Template Criterion] Observed unit-cost reduction on target workload conforms to catalog rate differential without regression.',
         ],
         verification_instructions:
-          'Conduct continuous observation over active post-deployment window. Authoritative verification requires at least 15 post-deployment events and sustained unit-cost reduction of at least 10.0% without error or latency regressions.',
+          'Conduct continuous observation over active post-deployment window. Authoritative verification requires at least 15 post-deployment events and observed unit-cost reduction of at least 10.0% across comparable production traffic without error or latency regressions.',
         rollback_plan:
           'Maintain an application configuration or environment variable flag (e.g. AI_MODEL_ROUTING_OVERRIDE) to immediately toggle routing back to baseline model if benchmark degradation, error spikes, or schema failures are detected.',
       };

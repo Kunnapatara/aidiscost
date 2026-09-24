@@ -92,7 +92,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
           Verify Savings: {finding.title}
         </h1>
         <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-          Conservative validation engine. Authoritative verification requires sustained post-deployment
+          Conservative validation engine. Authoritative verification requires qualifying post-deployment
           telemetry proving unit-cost reduction across comparable production traffic.
         </p>
       </div>

@@ -387,7 +387,7 @@ export default function App() {
             annualized_realized_savings_usd: 0,
             verification_confidence: 'INSUFFICIENT_OBSERVATION',
             verification_notes:
-              'Observation window initiated. Telemetry events will be monitored for sustained unit cost reduction.',
+              'Observation window initiated. Telemetry events will be monitored for unit cost reduction across comparable production traffic.',
           },
         });
       }

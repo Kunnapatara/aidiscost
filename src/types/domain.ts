@@ -101,6 +101,10 @@ export interface FindingEvidence {
   }[];
   trace_samples: string[];
   mathematical_proof: string;
+  baseline_period?: {
+    start: string;
+    end: string;
+  };
 }
 
 /**

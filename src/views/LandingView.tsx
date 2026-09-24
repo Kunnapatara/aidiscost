@@ -128,7 +128,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
             </div>
             <h3 className="font-bold text-slate-900 text-base mb-1">4. VERIFY</h3>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Empirical before-and-after comparison. We never declare verified savings until post-deployment telemetry demonstrates sustained unit reduction.
+              Empirical before-and-after comparison. We never declare verified savings until post-deployment telemetry demonstrates observed unit reduction across the required comparable production sample.
             </p>
           </div>
         </div>
@@ -173,7 +173,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 <span>Conservative Verification</span>
               </div>
               <p className="text-xs text-slate-400 leading-relaxed">
-                We refuse to label savings &quot;verified&quot; without sufficient sample volume and sustained observation across identical workloads.
+                We refuse to label savings &quot;verified&quot; without sufficient sample volume and empirical observation across identical workloads.
               </p>
             </div>
           </div>

@@ -78,8 +78,14 @@ export function isValidProductionBaseline(
 
 /**
  * Validates technical event data quality:
- * Rejects missing/malformed ID, missing/corrupt timestamps, invalid/negative cost,
+ * Rejects missing/malformed ID, missing/corrupt timestamps, invalid/negative/zero cost,
  * non-SUCCESS status, or missing model.
+ * 
+ * For authoritative verification:
+ * - Cost must be finite
+ * - Cost must be strictly positive (resolved_cost_usd > 0)
+ * - Zero cost is rejected from billable authoritative verification telemetry
+ * - NaN, Infinity, negative, null, and undefined are rejected
  */
 export function isValidEventData(e: AIEvent, deployTime: number): boolean {
   if (!e || typeof e !== 'object') return false;
@@ -89,7 +95,11 @@ export function isValidEventData(e: AIEvent, deployTime: number): boolean {
   const eventTime = new Date(e.timestamp).getTime();
   if (isNaN(eventTime) || eventTime < deployTime) return false;
 
-  if (typeof e.resolved_cost_usd !== 'number' || !Number.isFinite(e.resolved_cost_usd) || e.resolved_cost_usd < 0) {
+  if (
+    typeof e.resolved_cost_usd !== 'number' ||
+    !Number.isFinite(e.resolved_cost_usd) ||
+    e.resolved_cost_usd <= 0
+  ) {
     return false;
   }
 
@@ -141,6 +151,111 @@ export function isComparableEvent(event: AIEvent, finding: Finding): boolean {
   return event.operation === 'chat' || event.operation === 'completion';
 }
 
+export interface AnnualizedCalculation {
+  valid: boolean;
+  annualized_savings_usd: number;
+  duration_days: number;
+  reason?: string;
+}
+
+/**
+ * Calculates annualized verified savings strictly derived from observed savings
+ * across the actual baseline window duration.
+ * Formula: (observed_savings / observed_days) * 365
+ * Where observed_savings = costDeltaPerCall * sampleCount.
+ * 
+ * Strict guards:
+ * - Withholds annualization if baseline start or end is missing
+ * - Withholds if timestamps are invalid or end <= start
+ * - Withholds if duration is zero, negative, NaN, or non-finite
+ * - Withholds if sample count is zero or non-positive
+ * - Withholds if cost delta is non-positive, NaN, or non-finite
+ */
+export function calculateAnnualizedVerifiedSavings(
+  costDeltaPerCall: number,
+  sampleCount: number,
+  baselineStart?: string,
+  baselineEnd?: string
+): AnnualizedCalculation {
+  if (!Number.isFinite(costDeltaPerCall) || costDeltaPerCall <= 0) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Cost delta is zero, negative, or non-finite',
+    };
+  }
+
+  if (!Number.isFinite(sampleCount) || sampleCount <= 0) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Sample count is zero, negative, or non-finite',
+    };
+  }
+
+  if (!baselineStart || !baselineEnd || baselineStart === 'N/A' || baselineEnd === 'N/A') {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Baseline window timestamps are missing or undefined',
+    };
+  }
+
+  const startTime = new Date(baselineStart).getTime();
+  const endTime = new Date(baselineEnd).getTime();
+
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || isNaN(startTime) || isNaN(endTime)) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Baseline window timestamps are invalid or unparseable',
+    };
+  }
+
+  if (endTime <= startTime) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Baseline window duration is zero or inverted (end <= start)',
+    };
+  }
+
+  const durationMs = endTime - startTime;
+  const durationDays = durationMs / 86_400_000;
+
+  if (!Number.isFinite(durationDays) || durationDays <= 0) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: 0,
+      reason: 'Baseline duration is non-positive or non-finite',
+    };
+  }
+
+  const observedSavings = costDeltaPerCall * sampleCount;
+  const rawAnnualized = (observedSavings / durationDays) * 365;
+
+  if (!Number.isFinite(rawAnnualized) || rawAnnualized <= 0) {
+    return {
+      valid: false,
+      annualized_savings_usd: 0,
+      duration_days: durationDays,
+      reason: 'Calculated annualized savings resulted in non-finite or non-positive value',
+    };
+  }
+
+  return {
+    valid: true,
+    annualized_savings_usd: Number(rawAnnualized.toFixed(2)),
+    duration_days: durationDays,
+  };
+}
+
 /**
  * Initialize baseline state from finding
  */
@@ -149,12 +264,17 @@ export function initializeVerificationState(finding: Finding): VerificationState
     ? finding.baseline_spend_usd / finding.eligible_event_count
     : 0;
 
+  const start = finding.evidence?.baseline_period?.start
+    || new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const end = finding.evidence?.baseline_period?.end
+    || new Date().toISOString();
+
   return {
     finding_id: finding.id,
     stage: 'BASELINE',
     baseline_window: {
-      start: new Date(Date.now() - 7 * 86_400_000).toISOString(),
-      end: new Date().toISOString(),
+      start,
+      end,
       avg_cost_per_call_usd: Number(avgCost.toFixed(6)),
       sample_count: finding.eligible_event_count,
     },
@@ -175,7 +295,7 @@ export function initializeVerificationState(finding: Finding): VerificationState
  *    - Valid event data quality (valid timestamps >= deployTime, positive cost, SUCCESS status)
  *    - Finding scope comparability
  *    - Minimum 15 eligible post-deployment observations
- *    - Sustained unit cost reduction >= 10.0%
+ *    - Observed unit cost reduction >= 10.0% across comparable production sample
  */
 export function evaluateVerification(
   currentState: VerificationState,
@@ -217,8 +337,15 @@ export function evaluateVerification(
     const postAvgCost = validSimulated.length > 0 ? totalSimCost / validSimulated.length : 0;
     const costDelta = preAvgCost - postAvgCost;
     const reductionPct = preAvgCost > 0 ? (costDelta / preAvgCost) * 100 : 0;
-    const estimatedCallVolumeAnnual = currentState.baseline_window.sample_count * 52;
-    const simulatedAnnualSavings = Math.max(0, costDelta * estimatedCallVolumeAnnual);
+
+    // Derived annualized projection from observed baseline duration
+    const simAnnualization = calculateAnnualizedVerifiedSavings(
+      costDelta,
+      currentState.baseline_window.sample_count,
+      currentState.baseline_window.start,
+      currentState.baseline_window.end
+    );
+    const simulatedAnnualSavings = simAnnualization.valid ? simAnnualization.annualized_savings_usd : 0;
 
     const isThresholdMet = validSimulated.length >= VERIFICATION_CONSTRAINTS.MIN_POST_DEPLOYMENT_EVENTS;
 
@@ -334,15 +461,31 @@ export function evaluateVerification(
   const reductionPct = preAvgCost > 0 ? (costDelta / preAvgCost) * 100 : 0;
 
   // Realized annualized savings calculation:
-  // Baseline call volume per year = baseline sample count * 52 weeks
-  const estimatedCallVolumeAnnual = currentState.baseline_window.sample_count * 52;
-  const realizedAnnualSavings = Math.max(0, costDelta * estimatedCallVolumeAnnual);
+  // Derived strictly from observed savings across the actual baseline window duration
+  // Formula: (observed_savings / observed_days) * 365
+  const annualization = calculateAnnualizedVerifiedSavings(
+    costDelta,
+    currentState.baseline_window.sample_count,
+    currentState.baseline_window.start,
+    currentState.baseline_window.end
+  );
 
-  const isVerified = reductionPct >= VERIFICATION_CONSTRAINTS.MIN_UNIT_REDUCTION_PCT;
+  const isReductionThresholdMet = reductionPct >= VERIFICATION_CONSTRAINTS.MIN_UNIT_REDUCTION_PCT;
+  // Authoritative verification requires both unit cost reduction and valid annualization
+  const isAuthoritative = isReductionThresholdMet && annualization.valid;
+
+  let verificationNotes: string;
+  if (isAuthoritative) {
+    verificationNotes = `Confirmed unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events.${exclusionNote}`;
+  } else if (isReductionThresholdMet && !annualization.valid) {
+    verificationNotes = `Observed unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events, but annualization projection is withheld: ${annualization.reason}.${exclusionNote}`;
+  } else {
+    verificationNotes = `Observed ${reductionPct.toFixed(1)}% delta across ${eligiblePostEvents.length} production events, below the required ${VERIFICATION_CONSTRAINTS.MIN_UNIT_REDUCTION_PCT}% unit reduction threshold.${exclusionNote} Observation remains active.`;
+  }
 
   return {
     ...currentState,
-    stage: isVerified ? 'VERIFIED_RESULT' : 'OBSERVATION_ACTIVE',
+    stage: isAuthoritative ? 'VERIFIED_RESULT' : 'OBSERVATION_ACTIVE',
     is_simulated: false,
     post_deployment_file_name: fileName,
     observation_window: observationWindow,
@@ -350,12 +493,10 @@ export function evaluateVerification(
       pre_cost_per_call_usd: Number(preAvgCost.toFixed(6)),
       post_cost_per_call_usd: Number(postAvgCost.toFixed(6)),
       observed_reduction_pct: Number(reductionPct.toFixed(1)),
-      annualized_realized_savings_usd: isVerified ? Number(realizedAnnualSavings.toFixed(2)) : 0,
-      verification_confidence: isVerified ? 'HIGH' : 'MEDIUM',
-      verification_notes: isVerified
-        ? `Confirmed sustained unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events.${exclusionNote}`
-        : `Observed ${reductionPct.toFixed(1)}% delta across ${eligiblePostEvents.length} production events, below the required ${VERIFICATION_CONSTRAINTS.MIN_UNIT_REDUCTION_PCT}% sustained threshold.${exclusionNote} Observation remains active.`,
-      is_authoritative: isVerified,
+      annualized_realized_savings_usd: isAuthoritative ? annualization.annualized_savings_usd : 0,
+      verification_confidence: isAuthoritative ? 'HIGH' : 'MEDIUM',
+      verification_notes: verificationNotes,
+      is_authoritative: isAuthoritative,
     },
   };
 }
