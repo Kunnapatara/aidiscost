@@ -8,6 +8,7 @@ import { Finding, VerificationState, AIEvent } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
 import { ArrowLeft, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck, Clock, Layers } from 'lucide-react';
+import { calculateOutcomeFee } from '../engine/billing/outcome';
 
 interface VerifyViewProps {
   finding: Finding;
@@ -193,6 +194,87 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
               {verificationState.observed_result?.verification_notes}
             </p>
           </div>
+
+          {/* Outcome Fee Commercial Calculation (if verified) */}
+          {isVerified && (() => {
+            const verifiedAnnualSavings = verificationState.observed_result?.annualized_realized_savings_usd || 0;
+            const verifiedMonthlySavings = verifiedAnnualSavings / 12;
+            const estimatedMonthlySavings = finding.annualized_projection_usd > 0
+              ? finding.annualized_projection_usd / 12
+              : (finding.estimated_savings_usd || 0);
+            const outcome = calculateOutcomeFee(verifiedMonthlySavings, estimatedMonthlySavings);
+
+            return (
+              <div className="p-6 rounded-2xl bg-white border-2 border-emerald-600 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-800 font-mono">
+                        Step 3: Verified Outcome Fee Evaluation
+                      </h3>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Pay once, only after verification &bull; Capped at 1 month of verified savings
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] uppercase tracking-wider font-mono text-slate-500 block">Final One-Time Fee</span>
+                    <span className="text-2xl font-extrabold font-mono text-emerald-700">
+                      ${outcome.finalOutcomeFeeUsd.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Mathematical breakdown */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">Verified Monthly Run-rate</span>
+                    <span className="font-bold text-slate-900">${outcome.verifiedMonthlyRunRateUsd.toFixed(2)}</span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">Annualized Savings (&times;12)</span>
+                    <span className="font-bold text-slate-900">${outcome.verifiedAnnualizedSavingsUsd.toFixed(2)}</span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">20% Annualized Fee</span>
+                    <span className="font-bold text-slate-600">${outcome.rawOutcomeFeeUsd.toFixed(2)}</span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">1-Month Cap (1.0&times;)</span>
+                    <span className="font-bold text-emerald-700">${outcome.capAmountUsd.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                {/* 50% Protection Clause Callout */}
+                {outcome.protectionTriggered ? (
+                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                    <span className="font-bold block mb-0.5">50% Protection Clause Triggered &mdash; Outcome Fee Waived ($0.00)</span>
+                    <p className="leading-relaxed">
+                      {outcome.protectionReason || `Verified savings achieved ${(outcome.realizedRatio * 100).toFixed(1)}% of original estimate, which is below the 50% threshold. You owe $0.00 outcome fee.`}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-950 text-xs flex items-center justify-between">
+                    <div>
+                      <span className="font-bold block">50% Protection Condition Satisfied</span>
+                      <span className="text-slate-600">
+                        Achieved {(outcome.realizedRatio * 100).toFixed(1)}% of original estimate (threshold &ge; 50%). Fee bound by 1-month cap.
+                      </span>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-emerald-700 px-2 py-1 bg-white rounded border border-emerald-200">
+                      Cap Bound: ${outcome.finalOutcomeFeeUsd.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+
+                <div className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-slate-100 flex items-start gap-1.5">
+                  <span className="font-semibold text-slate-700 shrink-0">Truth Boundary:</span>
+                  <span>Verification measures what changed. It does not guarantee future results. No ongoing percentage, recurring retainers, or subscription commitments.</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

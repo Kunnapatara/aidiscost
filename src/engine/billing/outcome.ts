@@ -1,0 +1,141 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { CommercialPricingConstants, OutcomeFeeCalculation, CommercialROIExample } from '../../types/commercial';
+
+export const COMMERCIAL_PRICING: CommercialPricingConstants = {
+  FREE_AUDIT_PRICE_USD: 0,
+  FIX_PACKAGE_PRICE_USD: 49,
+  OUTCOME_FEE_ANNUAL_PCT: 0.20,
+  OUTCOME_FEE_CAP_MONTHS: 1.0,
+  PROTECTION_MIN_RATIO: 0.50,
+};
+
+/**
+ * Calculates the Outcome Fee deterministically from verified monthly savings run-rate
+ * and original estimated monthly savings.
+ * 
+ * Rules:
+ * 1. Verified Annualized Savings = Verified Monthly Run-rate × 12
+ * 2. Raw Outcome Fee = 20% × Verified Annualized Savings
+ * 3. Cap = 1.0 × Verified Monthly Run-rate
+ * 4. Fee before protection = MIN(Raw Outcome Fee, Cap)
+ * 5. 50% Protection Clause:
+ *    If verifiedMonthly < originalEstimateMonthly × 0.50, you pay no outcome fee ($0.00).
+ *    Boundary: 49.99% -> $0 outcome fee; 50.00% -> normal fee calculation.
+ * 6. Safety:
+ *    Zero verified savings -> $0.00 fee.
+ *    Negative values -> $0.00 fee (no negative fees or NaN).
+ */
+export function calculateOutcomeFee(
+  verifiedMonthlySavingsUsd: number,
+  originalEstimatedMonthlySavingsUsd: number
+): OutcomeFeeCalculation {
+  // Guard against NaN, undefined, or negative values
+  const verifiedMonthly = Number.isFinite(verifiedMonthlySavingsUsd) ? Math.max(0, verifiedMonthlySavingsUsd) : 0;
+  const originalEstimate = Number.isFinite(originalEstimatedMonthlySavingsUsd) ? Math.max(0, originalEstimatedMonthlySavingsUsd) : 0;
+
+  if (verifiedMonthly <= 0) {
+    return {
+      verifiedMonthlyRunRateUsd: 0,
+      verifiedAnnualizedSavingsUsd: 0,
+      rawOutcomeFeeUsd: 0,
+      capAmountUsd: 0,
+      originalEstimatedMonthlySavingsUsd: originalEstimate,
+      realizedRatio: 0,
+      protectionTriggered: false,
+      finalOutcomeFeeUsd: 0,
+      isPayable: false,
+      methodologyDescription: 'Zero verified monthly run-rate. No outcome fee is payable.',
+    };
+  }
+
+  const annualized = Number((verifiedMonthly * 12).toFixed(2));
+  const rawFee = Number((annualized * COMMERCIAL_PRICING.OUTCOME_FEE_ANNUAL_PCT).toFixed(2));
+  const cap = Number((verifiedMonthly * COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS).toFixed(2));
+  const feeBeforeProtection = Math.min(rawFee, cap);
+
+  // Protection evaluation: compare verified monthly run-rate against original estimate
+  let protectionTriggered = false;
+  let protectionReason: string | undefined;
+  let realizedRatio = 1.0;
+
+  if (originalEstimate > 0) {
+    realizedRatio = verifiedMonthly / originalEstimate;
+    // Boundary: 49.99% triggers protection (< 0.50), 50.00% does not (>= 0.50)
+    // 1e-7 floating-point tolerance protects against IEEE 754 precision issues
+    if (realizedRatio < (COMMERCIAL_PRICING.PROTECTION_MIN_RATIO - 1e-7)) {
+      protectionTriggered = true;
+      protectionReason = `Verified savings ($${verifiedMonthly.toFixed(2)}/mo, ${(realizedRatio * 100).toFixed(1)}%) fell below 50% of the original estimate ($${originalEstimate.toFixed(2)}/mo). 50% Protection Clause triggered: $0.00 fee.`;
+    }
+  }
+
+  const finalFee = protectionTriggered ? 0 : Number(feeBeforeProtection.toFixed(2));
+
+  return {
+    verifiedMonthlyRunRateUsd: verifiedMonthly,
+    verifiedAnnualizedSavingsUsd: annualized,
+    rawOutcomeFeeUsd: rawFee,
+    capAmountUsd: cap,
+    originalEstimatedMonthlySavingsUsd: originalEstimate,
+    realizedRatio: Number(realizedRatio.toFixed(4)),
+    protectionTriggered,
+    protectionReason,
+    finalOutcomeFeeUsd: finalFee,
+    isPayable: finalFee > 0,
+    methodologyDescription: protectionTriggered
+      ? `50% Protection Clause triggered (achieved ${(realizedRatio * 100).toFixed(1)}% vs 50% threshold). Outcome fee waived ($0.00).`
+      : `Verified monthly run-rate ($${verifiedMonthly.toFixed(2)}) annualized to $${annualized.toFixed(2)}. 20% fee is $${rawFee.toFixed(2)}, capped at 1 month ($${cap.toFixed(2)}). Final one-time fee: $${finalFee.toFixed(2)}.`,
+  };
+}
+
+/**
+ * Generates the canonical ROI and cost-of-inaction commercial illustration:
+ * Verified Monthly: $1,000
+ * Annualized: $12,000
+ * 20% Annualized: $2,400
+ * Cap: $1,000
+ * Final: $1,000
+ */
+export function generateCommercialROIExample(): CommercialROIExample {
+  const monthly = 1000;
+  const annualized = 12000;
+  const raw = 2400;
+  const cap = 1000;
+  const finalFee = 1000;
+
+  return {
+    verifiedMonthlySavingUsd: monthly,
+    annualizedSavingUsd: annualized,
+    rawOutcomeFeeUsd: raw,
+    capAmountUsd: cap,
+    finalOutcomeFeeUsd: finalFee,
+    yearlyBreakdown: [
+      {
+        year: 1,
+        verifiedSavingsUsd: 12000,
+        aidiscostFeeUsd: -1000,
+        netSavingsUsd: 11000,
+        costOfInactionUsd: -12000,
+      },
+      {
+        year: 2,
+        verifiedSavingsUsd: 12000,
+        aidiscostFeeUsd: 0,
+        netSavingsUsd: 12000,
+        costOfInactionUsd: -12000,
+      },
+      {
+        year: 3,
+        verifiedSavingsUsd: 12000,
+        aidiscostFeeUsd: 0,
+        netSavingsUsd: 12000,
+        costOfInactionUsd: -12000,
+      },
+    ],
+    disclaimer:
+      "Economic illustration based on the example's verified monthly saving continuing at the same rate. Not a guarantee of future results.",
+  };
+}

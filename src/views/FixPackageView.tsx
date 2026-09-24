@@ -56,7 +56,7 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
           ) : (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-800 border border-slate-300">
               <Lock className="w-3.5 h-3.5 text-slate-600" />
-              <span>$49 FIX PACKAGE</span>
+              <span>$49 / FINDING (ONE-TIME)</span>
             </span>
           )}
         </div>
@@ -82,13 +82,19 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
           <div>
             <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">
               <Lock className="w-4 h-4" />
-              <span>Actionable Engineering Deliverable</span>
+              <span>Actionable Engineering Deliverable &bull; $49 / finding</span>
             </div>
             <h2 className="text-xl font-bold">Unlock Full Implementation Specifications</h2>
             <p className="text-xs text-slate-300 mt-1 max-w-lg leading-relaxed">
               Unlocks the root cause diagnosis, 48-hour canary test harness instructions,
               acceptance criteria checklist, rollback protocol, and verification thresholds.
             </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11px] text-slate-400 font-medium">
+              <span>&bull; One-time payment</span>
+              <span>&bull; No subscription</span>
+              <span>&bull; Each finding unlocks separately</span>
+              <span>&bull; Implement using your own engineers, Cursor, or existing tools</span>
+            </div>
           </div>
 
           <div className="shrink-0 flex flex-col items-start sm:items-end gap-2">
@@ -104,11 +110,11 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
               ) : (
                 <>
                   <Unlock className="w-4 h-4" />
-                  <span>Unlock Fix Package ($49)</span>
+                  <span>Unlock Fix Package — $49</span>
                 </>
               )}
             </button>
-            <span className="text-[11px] text-slate-400">Instant unlock &bull; Test simulation mode</span>
+            <span className="text-[11px] text-slate-400">One-time payment ($49) &bull; Test simulation mode</span>
           </div>
         </div>
       )}

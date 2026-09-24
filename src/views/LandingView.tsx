@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { ArrowRight, ShieldCheck, Database, CheckCircle2, Search, Sliders, RefreshCw } from 'lucide-react';
+import { ArrowRight, ShieldCheck, Database, CheckCircle2, Search, Sliders, RefreshCw, AlertCircle } from 'lucide-react';
 
 interface LandingViewProps {
   onStartAudit: () => void;
@@ -177,71 +177,281 @@ export const LandingView: React.FC<LandingViewProps> = ({
         </div>
       </section>
 
-      {/* Pricing Tiers Overview */}
-      <section className="max-w-5xl mx-auto px-4">
-        <div className="text-center mb-8">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-            Transparent Pricing Structure
+      {/* Three-Step Commercial Architecture */}
+      <section className="max-w-5xl mx-auto px-4 space-y-10">
+        <div className="text-center max-w-3xl mx-auto">
+          <span className="text-xs font-mono uppercase tracking-wider text-emerald-600 font-semibold">
+            Commercial Contract
+          </span>
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mt-1">
+            Pay for the evidence. Not another subscription.
           </h2>
-          <p className="text-xl sm:text-2xl font-bold text-slate-900 mt-1">
-            Free Diagnostics &bull; $49 per Verified Fix Package
+          <p className="text-sm sm:text-base text-slate-600 mt-2 leading-relaxed">
+            Pay $49 to know what to fix. Fix it yourself if you can. If we verify the saving &mdash; pay once, capped at one month of savings.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="p-5 rounded-xl bg-white border border-slate-200">
-            <span className="text-xs font-semibold text-slate-500 uppercase">Free Audit</span>
-            <div className="text-2xl font-bold font-mono text-slate-900 mt-1 mb-3">$0</div>
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-              Full data health check, spend analysis, and evidence summary for all detected patterns.
-            </p>
-            <ul className="text-xs text-slate-600 space-y-1.5 font-medium">
-              <li className="flex items-center gap-1.5">&bull; 4 telemetry adapters</li>
-              <li className="flex items-center gap-1.5">&bull; Data health gate</li>
-              <li className="flex items-center gap-1.5">&bull; Mathematical proof</li>
-            </ul>
+        {/* 3-Step Presentation Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Step 01: Free Audit */}
+          <div className="p-6 rounded-2xl bg-white border border-slate-200 shadow-2xs flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-slate-100 font-mono text-xs font-bold text-slate-700">
+                  01
+                </span>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Free Audit
+                </span>
+              </div>
+              <div className="text-3xl font-extrabold font-mono text-slate-900 mt-1 mb-2">$0</div>
+              <h3 className="text-base font-bold text-slate-900 mb-2">Find the economic anomaly.</h3>
+              <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                Connect your telemetry to uncover model waste, retry storms, and redundant loops with mathematical proof.
+              </p>
+              <div className="space-y-2 pt-3 border-t border-slate-100 text-xs text-slate-700">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Finding detection &amp; categorization</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Evidence preview &amp; trace correlation</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Estimated recovery run-rate</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                id="btn-pricing-free-audit"
+                onClick={onStartAudit}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2"
+              >
+                <span>Run Free Audit &rarr;</span>
+              </button>
+              <p className="text-[11px] text-center text-slate-500 mt-2">
+                No credit card required &bull; Read-only export
+              </p>
+            </div>
           </div>
 
-          <div className="p-5 rounded-xl bg-white border-2 border-emerald-600 shadow-sm relative">
-            <span className="absolute -top-2.5 right-4 bg-emerald-600 text-white font-mono text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
-              Primary Deliverable
+          {/* Step 02: Fix Package */}
+          <div className="p-6 rounded-2xl bg-white border-2 border-emerald-600 shadow-sm relative flex flex-col justify-between">
+            <span className="absolute -top-3 right-6 bg-emerald-600 text-white font-mono text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+              One-Time Deliverable
             </span>
-            <span className="text-xs font-semibold text-emerald-700 uppercase">Optimization Fix</span>
-            <div className="text-2xl font-bold font-mono text-slate-900 mt-1 mb-3">$49 <span className="text-xs font-normal text-slate-500">/ finding</span></div>
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-              Complete engineering fix package with root cause, canary test plan, and rollback criteria.
-            </p>
-            <ul className="text-xs text-slate-600 space-y-1.5 font-medium">
-              <li className="flex items-center gap-1.5">&bull; Root cause hypothesis</li>
-              <li className="flex items-center gap-1.5">&bull; 48h canary test plan</li>
-              <li className="flex items-center gap-1.5">&bull; Verification guide</li>
-            </ul>
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-100 font-mono text-xs font-bold text-emerald-800">
+                  02
+                </span>
+                <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">
+                  Fix Package
+                </span>
+              </div>
+              <div className="text-3xl font-extrabold font-mono text-slate-900 mt-1 mb-1">
+                $49 <span className="text-xs font-normal text-slate-500">/ finding</span>
+              </div>
+              <div className="text-[11px] font-semibold text-emerald-800 mb-2">
+                One-time payment &bull; No subscription
+              </div>
+              <h3 className="text-base font-bold text-slate-900 mb-2">Know exactly what to fix.</h3>
+              <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                Actionable engineering package providing root-cause analysis, canary test plan, acceptance criteria, and rollback protocol.
+              </p>
+              <div className="space-y-2 pt-3 border-t border-slate-100 text-xs text-slate-700">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Full evidence &amp; mathematical proof</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Root cause hypothesis &amp; router specs</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Canary test plan (sample size &amp; metrics)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Acceptance criteria checklist</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Rollback plan &amp; safety toggles</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Verification specification</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                id="btn-pricing-unlock-fix"
+                onClick={hasActiveAudit ? () => onNavigate('/audit') : onStartAudit}
+                className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs"
+              >
+                <span>Unlock Fix Package &mdash; $49</span>
+              </button>
+              <p className="text-[11px] text-center text-slate-500 mt-2">
+                Each finding unlocks separately &bull; Fix with your own tools
+              </p>
+            </div>
           </div>
 
-          <div className="p-5 rounded-xl bg-white border border-slate-200">
-            <span className="text-xs font-semibold text-slate-500 uppercase">Continuous</span>
-            <div className="text-2xl font-bold font-mono text-slate-900 mt-1 mb-3">$79 <span className="text-xs font-normal text-slate-500">/ month</span></div>
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-              Automated recurring audits and continuous telemetry monitoring for production teams.
+          {/* Step 03: Verified Outcome */}
+          <div className="p-6 rounded-2xl bg-white border border-slate-200 shadow-2xs flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-teal-100 font-mono text-xs font-bold text-teal-800">
+                  03
+                </span>
+                <span className="text-xs font-semibold text-teal-700 uppercase tracking-wider">
+                  Verified Outcome
+                </span>
+              </div>
+              <div className="text-xl font-extrabold font-mono text-slate-900 mt-1 mb-1">
+                20% <span className="text-xs font-normal text-slate-500">of verified annualized savings</span>
+              </div>
+              <div className="text-[11px] font-bold text-teal-800 mb-2">
+                Capped at 1 month of verified savings
+              </div>
+              <h3 className="text-base font-bold text-slate-900 mb-2">Pay once, only after verification.</h3>
+              <p className="text-xs text-slate-600 mb-3 leading-relaxed">
+                You pay whichever is lower. Zero ongoing percentage, zero monthly retainer, and zero recurring invoices.
+              </p>
+
+              {/* 50% Protection Clause Callout */}
+              <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 mb-3">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 block mb-0.5">
+                  50% Protection Clause
+                </span>
+                <p className="text-[11px] text-amber-900 leading-snug">
+                  If verified savings fall below 50% of the original estimate, you pay no outcome fee.
+                </p>
+              </div>
+
+              {/* Truth Boundary Callout */}
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 block mb-0.5">
+                  Truth Boundary
+                </span>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Verification measures what changed. It does not guarantee future results.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-slate-100">
+              <div className="w-full py-2.5 px-4 rounded-xl bg-slate-100 border border-slate-200 text-slate-800 font-bold text-xs text-center">
+                One-time &bull; Payable only after verified results
+              </div>
+              <p className="text-[11px] text-center text-slate-500 mt-2">
+                Independent evidence &bull; Non-recurring
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Commercial Economic Illustration (ROI & Cost of Inaction) */}
+        <div className="p-6 sm:p-8 rounded-2xl bg-white border border-slate-200 shadow-sm">
+          <div className="max-w-2xl mb-6">
+            <span className="text-xs font-mono uppercase tracking-wider text-emerald-700 font-semibold">
+              Commercial Economic Illustration
+            </span>
+            <h3 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1">
+              Cap in Action: Transparent Single-Payment ROI
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-600 mt-1">
+              How the 20% annualized fee and 1.0&times; monthly cap protect your downside and preserve your multi-year upside.
             </p>
-            <ul className="text-xs text-slate-600 space-y-1.5 font-medium">
-              <li className="flex items-center gap-1.5">&bull; Weekly batch audits</li>
-              <li className="flex items-center gap-1.5">&bull; Regressive drift alerts</li>
-              <li className="flex items-center gap-1.5">&bull; Multi-source ingestion</li>
-            </ul>
           </div>
 
-          <div className="p-5 rounded-xl bg-white border border-slate-200">
-            <span className="text-xs font-semibold text-slate-500 uppercase">Team Tier</span>
-            <div className="text-2xl font-bold font-mono text-slate-900 mt-1 mb-3">$199 <span className="text-xs font-normal text-slate-500">/ month</span></div>
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-              Multi-project organization hierarchy with custom model pricing registry overrides.
+          {/* Metrics summary banner */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 mb-6 text-xs">
+            <div>
+              <span className="text-slate-500 block text-[11px]">Verified Monthly Saving</span>
+              <span className="text-base font-bold font-mono text-slate-900">$1,000</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Annualized Saving</span>
+              <span className="text-base font-bold font-mono text-slate-900">$12,000</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">20% of Annualized</span>
+              <span className="text-base font-bold font-mono text-slate-600">$2,400</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Outcome Fee Cap</span>
+              <span className="text-base font-bold font-mono text-emerald-700">$1,000</span>
+            </div>
+            <div className="col-span-2 sm:col-span-1 border-t sm:border-t-0 sm:border-l border-slate-200 pt-2 sm:pt-0 sm:pl-3">
+              <span className="text-slate-500 block text-[11px]">Final Outcome Fee</span>
+              <span className="text-base font-extrabold font-mono text-emerald-700">$1,000</span>
+            </div>
+          </div>
+
+          {/* 3-Year Comparison Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 font-mono text-[11px] uppercase">
+                  <th className="py-2.5 pr-4 font-semibold">Economic Dimension</th>
+                  <th className="py-2.5 px-4 font-semibold text-right">Year 1</th>
+                  <th className="py-2.5 px-4 font-semibold text-right">Year 2</th>
+                  <th className="py-2.5 pl-4 font-semibold text-right">Year 3</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-mono">
+                <tr>
+                  <td className="py-3 pr-4 font-sans font-medium text-slate-800">
+                    Verified saving
+                  </td>
+                  <td className="py-3 px-4 text-right text-emerald-700 font-bold">$12,000</td>
+                  <td className="py-3 px-4 text-right text-emerald-700 font-bold">$12,000</td>
+                  <td className="py-3 pl-4 text-right text-emerald-700 font-bold">$12,000</td>
+                </tr>
+                <tr>
+                  <td className="py-3 pr-4 font-sans font-medium text-slate-800">
+                    AIDisCost fee
+                  </td>
+                  <td className="py-3 px-4 text-right text-slate-900 font-semibold">-$1,000</td>
+                  <td className="py-3 px-4 text-right text-slate-500">$0</td>
+                  <td className="py-3 pl-4 text-right text-slate-500">$0</td>
+                </tr>
+                <tr className="bg-emerald-50/50">
+                  <td className="py-3 pr-4 font-sans font-bold text-emerald-950">
+                    Net saving
+                  </td>
+                  <td className="py-3 px-4 text-right text-emerald-800 font-extrabold">$11,000</td>
+                  <td className="py-3 px-4 text-right text-emerald-800 font-extrabold">$12,000</td>
+                  <td className="py-3 pl-4 text-right text-emerald-800 font-extrabold">$12,000</td>
+                </tr>
+                <tr className="bg-rose-50/40 text-rose-900">
+                  <td className="py-3 pr-4 font-sans font-medium text-rose-800">
+                    If you don&apos;t fix (Cost of Inaction)
+                  </td>
+                  <td className="py-3 px-4 text-right font-semibold text-rose-700">-$12,000</td>
+                  <td className="py-3 px-4 text-right font-semibold text-rose-700">-$12,000</td>
+                  <td className="py-3 pl-4 text-right font-semibold text-rose-700">-$12,000</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-slate-100 flex items-start gap-2 text-[11px] text-slate-500 leading-relaxed">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 text-slate-400 mt-0.5" />
+            <p>
+              Economic illustration based on the example&apos;s verified monthly saving continuing at the same rate. Not a guarantee of future results. The &quot;If you don&apos;t fix&quot; row is an economic illustration of ongoing unaddressed waste, not an absolute prediction.
             </p>
-            <ul className="text-xs text-slate-600 space-y-1.5 font-medium">
-              <li className="flex items-center gap-1.5">&bull; Unlimited findings</li>
-              <li className="flex items-center gap-1.5">&bull; Custom enterprise rates</li>
-              <li className="flex items-center gap-1.5">&bull; Priority support</li>
-            </ul>
           </div>
         </div>
       </section>

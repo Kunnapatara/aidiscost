@@ -119,7 +119,7 @@ export const BillingResultModal: React.FC<BillingResultModalProps> = ({
             </div>
             <h3 className="text-lg font-bold text-slate-900">Optimization Fix Package Unlocked</h3>
             <p className="text-xs text-slate-600 mt-1 mb-5">
-              Payment confirmed via Lemon Squeezy webhook ($49.00). Idempotency token verified.
+              Test Entitlement Verified ($49.00). Idempotency token registered.
             </p>
             <button
               type="button"
