@@ -125,12 +125,22 @@ describe('AIDisCost Commercial Contract — Outcome Fee & Protection Tests', () 
       assert.strictEqual(result.isPayable, false);
     });
 
-    test('handles zero original estimate safely without division by zero errors', () => {
+    test('handles zero original estimate safely by waiving fee ($0) rather than inventing a commercial obligation', () => {
       const result = calculateOutcomeFee(500, 0);
       assert.strictEqual(result.verifiedMonthlyRunRateUsd, 500);
-      assert.strictEqual(result.finalOutcomeFeeUsd, 500);
-      assert.strictEqual(result.protectionTriggered, false);
-      assert.strictEqual(result.isPayable, true);
+      assert.strictEqual(result.finalOutcomeFeeUsd, 0);
+      assert.strictEqual(result.protectionTriggered, true);
+      assert.strictEqual(result.isPayable, false);
+      assert.ok(result.protectionReason?.includes('Missing or non-positive original estimate baseline'));
+    });
+
+    test('handles negative original estimate safely by waiving fee ($0)', () => {
+      const result = calculateOutcomeFee(500, -250);
+      assert.strictEqual(result.verifiedMonthlyRunRateUsd, 500);
+      assert.strictEqual(result.finalOutcomeFeeUsd, 0);
+      assert.strictEqual(result.protectionTriggered, true);
+      assert.strictEqual(result.isPayable, false);
+      assert.ok(result.protectionReason?.includes('Missing or non-positive original estimate baseline'));
     });
   });
 

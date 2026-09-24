@@ -8,7 +8,7 @@ import { Finding, VerificationState, AIEvent } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
 import { ArrowLeft, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck, Clock, Layers } from 'lucide-react';
-import { calculateOutcomeFee } from '../engine/billing/outcome';
+import { calculateOutcomeFee, COMMERCIAL_PRICING } from '../engine/billing/outcome';
 
 interface VerifyViewProps {
   finding: Finding;
@@ -199,9 +199,9 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
           {isVerified && (() => {
             const verifiedAnnualSavings = verificationState.observed_result?.annualized_realized_savings_usd || 0;
             const verifiedMonthlySavings = verifiedAnnualSavings / 12;
-            const estimatedMonthlySavings = finding.annualized_projection_usd > 0
-              ? finding.annualized_projection_usd / 12
-              : (finding.estimated_savings_usd || 0);
+            const estimatedMonthlySavings = (finding.annualized_projection_usd && finding.annualized_projection_usd > 0)
+              ? Number((finding.annualized_projection_usd / 12).toFixed(2))
+              : 0;
             const outcome = calculateOutcomeFee(verifiedMonthlySavings, estimatedMonthlySavings);
 
             return (
@@ -215,7 +215,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                       </h3>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Pay once, only after verification &bull; Capped at 1 month of verified savings
+                      Pay once, only after verification &bull; Capped at {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)} month of verified savings
                     </p>
                   </div>
                   <div className="text-right">
@@ -227,21 +227,31 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                 </div>
 
                 {/* Mathematical breakdown */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs font-mono">
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-slate-500 block text-[11px] font-sans">Verified Monthly Run-rate</span>
+                    <span className="text-slate-500 block text-[11px] font-sans">Original Estimate/mo</span>
+                    <span className="font-bold text-slate-900">${outcome.originalEstimatedMonthlySavingsUsd.toFixed(2)}</span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">Verified Run-rate/mo</span>
                     <span className="font-bold text-slate-900">${outcome.verifiedMonthlyRunRateUsd.toFixed(2)}</span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-slate-500 block text-[11px] font-sans">Annualized Savings (&times;12)</span>
+                    <span className="text-slate-500 block text-[11px] font-sans">Realized Ratio</span>
+                    <span className={`font-bold ${outcome.protectionTriggered ? 'text-amber-700' : 'text-emerald-700'}`}>
+                      {(outcome.realizedRatio * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block text-[11px] font-sans">Annualized (&times;12)</span>
                     <span className="font-bold text-slate-900">${outcome.verifiedAnnualizedSavingsUsd.toFixed(2)}</span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-slate-500 block text-[11px] font-sans">20% Annualized Fee</span>
+                    <span className="text-slate-500 block text-[11px] font-sans">{(COMMERCIAL_PRICING.OUTCOME_FEE_ANNUAL_PCT * 100).toFixed(0)}% Annualized Fee</span>
                     <span className="font-bold text-slate-600">${outcome.rawOutcomeFeeUsd.toFixed(2)}</span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-slate-500 block text-[11px] font-sans">1-Month Cap (1.0&times;)</span>
+                    <span className="text-slate-500 block text-[11px] font-sans">{COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)}-Mo Cap ({COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(1)}&times;)</span>
                     <span className="font-bold text-emerald-700">${outcome.capAmountUsd.toFixed(2)}</span>
                   </div>
                 </div>
@@ -249,17 +259,17 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                 {/* 50% Protection Clause Callout */}
                 {outcome.protectionTriggered ? (
                   <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
-                    <span className="font-bold block mb-0.5">50% Protection Clause Triggered &mdash; Outcome Fee Waived ($0.00)</span>
+                    <span className="font-bold block mb-0.5">{(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% Protection Clause Triggered &mdash; Outcome Fee Waived ($0.00)</span>
                     <p className="leading-relaxed">
-                      {outcome.protectionReason || `Verified savings achieved ${(outcome.realizedRatio * 100).toFixed(1)}% of original estimate, which is below the 50% threshold. You owe $0.00 outcome fee.`}
+                      {outcome.protectionReason || `Verified savings achieved ${(outcome.realizedRatio * 100).toFixed(1)}% of original estimate, which is below the ${(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% threshold. You owe $0.00 outcome fee.`}
                     </p>
                   </div>
                 ) : (
                   <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-950 text-xs flex items-center justify-between">
                     <div>
-                      <span className="font-bold block">50% Protection Condition Satisfied</span>
+                      <span className="font-bold block">{(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% Protection Condition Satisfied</span>
                       <span className="text-slate-600">
-                        Achieved {(outcome.realizedRatio * 100).toFixed(1)}% of original estimate (threshold &ge; 50%). Fee bound by 1-month cap.
+                        Achieved {(outcome.realizedRatio * 100).toFixed(1)}% of original estimate (threshold &ge; {(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}%). Fee bound by {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)}-month cap.
                       </span>
                     </div>
                     <span className="text-xs font-mono font-bold text-emerald-700 px-2 py-1 bg-white rounded border border-emerald-200">

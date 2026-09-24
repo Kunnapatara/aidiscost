@@ -60,12 +60,20 @@ export function calculateOutcomeFee(
   // Protection evaluation: compare verified monthly run-rate against original estimate
   let protectionTriggered = false;
   let protectionReason: string | undefined;
-  let realizedRatio = 1.0;
+  let realizedRatio = 0;
 
-  if (originalEstimate > 0) {
+  if (originalEstimate <= 0) {
+    // Contractual safety: If there is no valid positive original estimate baseline,
+    // we cannot validate 50% protection compliance. The system must NOT invent a commercial
+    // obligation or assume a fallback ratio of 100%. The fee is safely waived ($0.00).
+    protectionTriggered = true;
+    protectionReason = 'Missing or non-positive original estimate baseline ($0.00). Under the commercial contract, 50% protection compliance cannot be validated without a valid original estimate; outcome fee is waived ($0.00).';
+    realizedRatio = 0;
+  } else {
     realizedRatio = verifiedMonthly / originalEstimate;
-    // Boundary: 49.99% triggers protection (< 0.50), 50.00% does not (>= 0.50)
-    // 1e-7 floating-point tolerance protects against IEEE 754 precision issues
+    // Boundary: Below 50% (< 0.50) triggers protection and waives fee to $0.
+    // 50.00% and above does NOT trigger protection (normal fee calculation).
+    // 1e-7 floating-point tolerance protects against IEEE 754 precision issues (e.g. 499.999999999 vs 500)
     if (realizedRatio < (COMMERCIAL_PRICING.PROTECTION_MIN_RATIO - 1e-7)) {
       protectionTriggered = true;
       protectionReason = `Verified savings ($${verifiedMonthly.toFixed(2)}/mo, ${(realizedRatio * 100).toFixed(1)}%) fell below 50% of the original estimate ($${originalEstimate.toFixed(2)}/mo). 50% Protection Clause triggered: $0.00 fee.`;

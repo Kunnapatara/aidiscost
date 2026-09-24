@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { ArrowRight, ShieldCheck, Database, CheckCircle2, Search, Sliders, RefreshCw, AlertCircle } from 'lucide-react';
+import { COMMERCIAL_PRICING, generateCommercialROIExample } from '../engine/billing/outcome';
 
 interface LandingViewProps {
   onStartAudit: () => void;
@@ -19,6 +20,8 @@ export const LandingView: React.FC<LandingViewProps> = ({
   onNavigate,
   hasActiveAudit = false,
 }) => {
+  const roi = generateCommercialROIExample();
+
   return (
     <div className="space-y-12 sm:space-y-16 pb-16">
       {/* Hero Section */}
@@ -187,7 +190,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
             Pay for the evidence. Not another subscription.
           </h2>
           <p className="text-sm sm:text-base text-slate-600 mt-2 leading-relaxed">
-            Pay $49 to know what to fix. Fix it yourself if you can. If we verify the saving &mdash; pay once, capped at one month of savings.
+            Pay ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} to know what to fix. Fix it yourself if you can. If we verify the saving &mdash; pay once, capped at {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS} month of savings.
           </p>
         </div>
 
@@ -204,7 +207,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   Free Audit
                 </span>
               </div>
-              <div className="text-3xl font-extrabold font-mono text-slate-900 mt-1 mb-2">$0</div>
+              <div className="text-3xl font-extrabold font-mono text-slate-900 mt-1 mb-2">${COMMERCIAL_PRICING.FREE_AUDIT_PRICE_USD}</div>
               <h3 className="text-base font-bold text-slate-900 mb-2">Find the economic anomaly.</h3>
               <p className="text-xs text-slate-600 mb-4 leading-relaxed">
                 Connect your telemetry to uncover model waste, retry storms, and redundant loops with mathematical proof.
@@ -255,7 +258,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 </span>
               </div>
               <div className="text-3xl font-extrabold font-mono text-slate-900 mt-1 mb-1">
-                $49 <span className="text-xs font-normal text-slate-500">/ finding</span>
+                ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} <span className="text-xs font-normal text-slate-500">/ finding</span>
               </div>
               <div className="text-[11px] font-semibold text-emerald-800 mb-2">
                 One-time payment &bull; No subscription
@@ -299,7 +302,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 onClick={hasActiveAudit ? () => onNavigate('/audit') : onStartAudit}
                 className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs"
               >
-                <span>Unlock Fix Package &mdash; $49</span>
+                <span>Unlock Fix Package &mdash; ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}</span>
               </button>
               <p className="text-[11px] text-center text-slate-500 mt-2">
                 Each finding unlocks separately &bull; Fix with your own tools
@@ -319,10 +322,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 </span>
               </div>
               <div className="text-xl font-extrabold font-mono text-slate-900 mt-1 mb-1">
-                20% <span className="text-xs font-normal text-slate-500">of verified annualized savings</span>
+                {(COMMERCIAL_PRICING.OUTCOME_FEE_ANNUAL_PCT * 100).toFixed(0)}% <span className="text-xs font-normal text-slate-500">of verified annualized savings</span>
               </div>
               <div className="text-[11px] font-bold text-teal-800 mb-2">
-                Capped at 1 month of verified savings
+                Capped at {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(0)} month of verified savings
               </div>
               <h3 className="text-base font-bold text-slate-900 mb-2">Pay once, only after verification.</h3>
               <p className="text-xs text-slate-600 mb-3 leading-relaxed">
@@ -332,10 +335,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
               {/* 50% Protection Clause Callout */}
               <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 mb-3">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 block mb-0.5">
-                  50% Protection Clause
+                  {(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% Protection Clause
                 </span>
                 <p className="text-[11px] text-amber-900 leading-snug">
-                  If verified savings fall below 50% of the original estimate, you pay no outcome fee.
+                  If verified savings fall below {(COMMERCIAL_PRICING.PROTECTION_MIN_RATIO * 100).toFixed(0)}% of the original estimate, you pay no outcome fee.
                 </p>
               </div>
 
@@ -371,7 +374,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
               Cap in Action: Transparent Single-Payment ROI
             </h3>
             <p className="text-xs sm:text-sm text-slate-600 mt-1">
-              How the 20% annualized fee and 1.0&times; monthly cap protect your downside and preserve your multi-year upside.
+              How the {(COMMERCIAL_PRICING.OUTCOME_FEE_ANNUAL_PCT * 100).toFixed(0)}% annualized fee and {COMMERCIAL_PRICING.OUTCOME_FEE_CAP_MONTHS.toFixed(1)}&times; monthly cap protect your downside and preserve your multi-year upside.
             </p>
           </div>
 
@@ -379,23 +382,23 @@ export const LandingView: React.FC<LandingViewProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 mb-6 text-xs">
             <div>
               <span className="text-slate-500 block text-[11px]">Verified Monthly Saving</span>
-              <span className="text-base font-bold font-mono text-slate-900">$1,000</span>
+              <span className="text-base font-bold font-mono text-slate-900">${roi.verifiedMonthlySavingUsd.toLocaleString()}</span>
             </div>
             <div>
               <span className="text-slate-500 block text-[11px]">Annualized Saving</span>
-              <span className="text-base font-bold font-mono text-slate-900">$12,000</span>
+              <span className="text-base font-bold font-mono text-slate-900">${roi.annualizedSavingUsd.toLocaleString()}</span>
             </div>
             <div>
-              <span className="text-slate-500 block text-[11px]">20% of Annualized</span>
-              <span className="text-base font-bold font-mono text-slate-600">$2,400</span>
+              <span className="text-slate-500 block text-[11px]">{(COMMERCIAL_PRICING.OUTCOME_FEE_ANNUAL_PCT * 100).toFixed(0)}% of Annualized</span>
+              <span className="text-base font-bold font-mono text-slate-600">${roi.rawOutcomeFeeUsd.toLocaleString()}</span>
             </div>
             <div>
               <span className="text-slate-500 block text-[11px]">Outcome Fee Cap</span>
-              <span className="text-base font-bold font-mono text-emerald-700">$1,000</span>
+              <span className="text-base font-bold font-mono text-emerald-700">${roi.capAmountUsd.toLocaleString()}</span>
             </div>
             <div className="col-span-2 sm:col-span-1 border-t sm:border-t-0 sm:border-l border-slate-200 pt-2 sm:pt-0 sm:pl-3">
               <span className="text-slate-500 block text-[11px]">Final Outcome Fee</span>
-              <span className="text-base font-extrabold font-mono text-emerald-700">$1,000</span>
+              <span className="text-base font-extrabold font-mono text-emerald-700">${roi.finalOutcomeFeeUsd.toLocaleString()}</span>
             </div>
           </div>
 
@@ -405,9 +408,9 @@ export const LandingView: React.FC<LandingViewProps> = ({
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500 font-mono text-[11px] uppercase">
                   <th className="py-2.5 pr-4 font-semibold">Economic Dimension</th>
-                  <th className="py-2.5 px-4 font-semibold text-right">Year 1</th>
-                  <th className="py-2.5 px-4 font-semibold text-right">Year 2</th>
-                  <th className="py-2.5 pl-4 font-semibold text-right">Year 3</th>
+                  {roi.yearlyBreakdown.map((row) => (
+                    <th key={row.year} className="py-2.5 px-4 font-semibold text-right">Year {row.year}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-mono">
@@ -415,33 +418,41 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   <td className="py-3 pr-4 font-sans font-medium text-slate-800">
                     Verified saving
                   </td>
-                  <td className="py-3 px-4 text-right text-emerald-700 font-bold">$12,000</td>
-                  <td className="py-3 px-4 text-right text-emerald-700 font-bold">$12,000</td>
-                  <td className="py-3 pl-4 text-right text-emerald-700 font-bold">$12,000</td>
+                  {roi.yearlyBreakdown.map((row) => (
+                    <td key={row.year} className="py-3 px-4 text-right text-emerald-700 font-bold">
+                      ${row.verifiedSavingsUsd.toLocaleString()}
+                    </td>
+                  ))}
                 </tr>
                 <tr>
                   <td className="py-3 pr-4 font-sans font-medium text-slate-800">
                     AIDisCost fee
                   </td>
-                  <td className="py-3 px-4 text-right text-slate-900 font-semibold">-$1,000</td>
-                  <td className="py-3 px-4 text-right text-slate-500">$0</td>
-                  <td className="py-3 pl-4 text-right text-slate-500">$0</td>
+                  {roi.yearlyBreakdown.map((row) => (
+                    <td key={row.year} className="py-3 px-4 text-right text-slate-900 font-semibold">
+                      {row.aidiscostFeeUsd < 0 ? `-$${Math.abs(row.aidiscostFeeUsd).toLocaleString()}` : `$${row.aidiscostFeeUsd}`}
+                    </td>
+                  ))}
                 </tr>
                 <tr className="bg-emerald-50/50">
                   <td className="py-3 pr-4 font-sans font-bold text-emerald-950">
                     Net saving
                   </td>
-                  <td className="py-3 px-4 text-right text-emerald-800 font-extrabold">$11,000</td>
-                  <td className="py-3 px-4 text-right text-emerald-800 font-extrabold">$12,000</td>
-                  <td className="py-3 pl-4 text-right text-emerald-800 font-extrabold">$12,000</td>
+                  {roi.yearlyBreakdown.map((row) => (
+                    <td key={row.year} className="py-3 px-4 text-right text-emerald-800 font-extrabold">
+                      ${row.netSavingsUsd.toLocaleString()}
+                    </td>
+                  ))}
                 </tr>
                 <tr className="bg-rose-50/40 text-rose-900">
                   <td className="py-3 pr-4 font-sans font-medium text-rose-800">
-                    If you don&apos;t fix (Cost of Inaction)
+                    Illustrative unrealized savings (Cost of Inaction)
                   </td>
-                  <td className="py-3 px-4 text-right font-semibold text-rose-700">-$12,000</td>
-                  <td className="py-3 px-4 text-right font-semibold text-rose-700">-$12,000</td>
-                  <td className="py-3 pl-4 text-right font-semibold text-rose-700">-$12,000</td>
+                  {roi.yearlyBreakdown.map((row) => (
+                    <td key={row.year} className="py-3 px-4 text-right font-semibold text-rose-700">
+                      -${Math.abs(row.costOfInactionUsd).toLocaleString()}
+                    </td>
+                  ))}
                 </tr>
               </tbody>
             </table>
@@ -450,7 +461,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
           <div className="mt-4 pt-4 border-t border-slate-100 flex items-start gap-2 text-[11px] text-slate-500 leading-relaxed">
             <AlertCircle className="w-3.5 h-3.5 shrink-0 text-slate-400 mt-0.5" />
             <p>
-              Economic illustration based on the example&apos;s verified monthly saving continuing at the same rate. Not a guarantee of future results. The &quot;If you don&apos;t fix&quot; row is an economic illustration of ongoing unaddressed waste, not an absolute prediction.
+              {roi.disclaimer} The &quot;Illustrative unrealized savings&quot; row is an economic illustration of ongoing unaddressed waste, not an absolute prediction.
             </p>
           </div>
         </div>
