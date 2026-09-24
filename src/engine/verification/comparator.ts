@@ -326,11 +326,58 @@ export function evaluateVerification(
   // If all post events are simulated, or there are zero production events:
   // -------------------------------------------------------------------------
   if (simulatedEvents.length > 0 && productionEvents.length === 0) {
-    const validSimulated = simulatedEvents.filter(e => isValidEventData(e, deployTime));
+    // Deduplicate simulated events by event ID
+    const seenSimIds = new Set<string>();
+    const uniqueSimulated: AIEvent[] = [];
+    for (const ev of simulatedEvents) {
+      if (!seenSimIds.has(ev.id)) {
+        seenSimIds.add(ev.id);
+        uniqueSimulated.push(ev);
+      }
+    }
+
+    const validSimulatedCandidates = uniqueSimulated.filter(e => isValidEventData(e, deployTime));
+
+    const hasExplicitWindow = Boolean(
+      currentState.observation_window?.start &&
+      currentState.observation_window?.end &&
+      currentState.observation_window.start !== currentState.observation_window.end
+    );
+
+    let observationStart: string;
+    let observationEnd: string;
+    let validSimulated: AIEvent[] = [];
+
+    if (hasExplicitWindow) {
+      observationStart = currentState.observation_window!.start;
+      observationEnd = currentState.observation_window!.end;
+      const startMs = new Date(observationStart).getTime();
+      const endMs = new Date(observationEnd).getTime();
+
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+        validSimulated = validSimulatedCandidates.filter(e => {
+          const t = new Date(e.timestamp).getTime();
+          return t >= startMs && t <= endMs;
+        });
+      }
+    } else {
+      observationStart = currentState.observation_window?.start || new Date(deployTime).toISOString();
+      const startMs = new Date(observationStart).getTime();
+      if (validSimulatedCandidates.length > 0) {
+        const maxTime = Math.max(...validSimulatedCandidates.map(e => new Date(e.timestamp).getTime()));
+        observationEnd = maxTime > startMs ? new Date(maxTime).toISOString() : observationStart;
+        validSimulated = validSimulatedCandidates.filter(e => {
+          const t = new Date(e.timestamp).getTime();
+          return t >= startMs && t <= maxTime;
+        });
+      } else {
+        observationEnd = observationStart;
+      }
+    }
 
     const observationWindow = {
-      start: currentState.observation_window?.start || new Date(deployTime).toISOString(),
-      end: currentState.observation_window?.end || new Date().toISOString(),
+      start: observationStart,
+      end: observationEnd,
       sample_event_count: validSimulated.length,
     };
 
@@ -398,7 +445,7 @@ export function evaluateVerification(
       post_deployment_file_name: fileName,
       observation_window: {
         start: new Date(deployTime).toISOString(),
-        end: new Date().toISOString(),
+        end: new Date(deployTime).toISOString(),
         sample_event_count: 0,
       },
       observed_result: {
@@ -413,21 +460,124 @@ export function evaluateVerification(
     };
   }
 
-  // Filter production events: must be valid data and comparable to finding scope
-  const eligiblePostEvents = productionEvents.filter(
+  // Deduplicate production events by event ID to prevent double-counting
+  const seenProdIds = new Set<string>();
+  const uniqueProdEvents: AIEvent[] = [];
+  let duplicateCount = 0;
+  for (const ev of productionEvents) {
+    if (seenProdIds.has(ev.id)) {
+      duplicateCount++;
+    } else {
+      seenProdIds.add(ev.id);
+      uniqueProdEvents.push(ev);
+    }
+  }
+
+  // Pre-filter candidate production events: valid data format, positive cost, comparable finding scope
+  const candidateEvents = uniqueProdEvents.filter(
     e => isValidEventData(e, deployTime) && isComparableEvent(e, finding)
   );
 
-  const excludedCount = postDeploymentEvents.length - eligiblePostEvents.length;
-  const exclusionNote = excludedCount > 0
-    ? ` (${excludedCount} events excluded: ${simulatedEvents.length} simulated, ${unknownProvenanceEvents.length} unknown provenance, ${productionEvents.length - eligiblePostEvents.length} non-comparable/invalid).`
-    : '';
+  // Authoritative Observation Window Determination:
+  // 1. If currentState has an explicitly declared observation window (start !== end),
+  //    strictly enforce [start, end] boundaries on telemetry.
+  // 2. If end is unclosed / equal to start / missing, derive end directly from the actual
+  //    telemetry population (max timestamp among eligible production events).
+  const hasExplicitWindow = Boolean(
+    currentState.observation_window?.start &&
+    currentState.observation_window?.end &&
+    currentState.observation_window.start !== currentState.observation_window.end
+  );
+
+  let observationStart: string;
+  let observationEnd: string;
+  let eligiblePostEvents: AIEvent[] = [];
+  let isWindowInvalid = false;
+
+  if (hasExplicitWindow) {
+    observationStart = currentState.observation_window!.start;
+    observationEnd = currentState.observation_window!.end;
+    const startMs = new Date(observationStart).getTime();
+    const endMs = new Date(observationEnd).getTime();
+
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
+      isWindowInvalid = true;
+      observationStart = currentState.observation_window!.start;
+      observationEnd = currentState.observation_window!.end;
+      eligiblePostEvents = [];
+    } else {
+      // Strictly filter to explicit observation window: event.timestamp >= start AND event.timestamp <= end
+      eligiblePostEvents = candidateEvents.filter(e => {
+        const t = new Date(e.timestamp).getTime();
+        return t >= startMs && t <= endMs;
+      });
+    }
+  } else {
+    // Event-derived observation window:
+    // start = deployment boundary
+    // end = maximum timestamp among eligible production events (never arbitrary current time)
+    observationStart = currentState.observation_window?.start || currentState.deployment_timestamp || new Date(deployTime).toISOString();
+    const startMs = new Date(observationStart).getTime();
+
+    if (candidateEvents.length > 0) {
+      const maxEventTime = Math.max(...candidateEvents.map(e => new Date(e.timestamp).getTime()));
+      if (isNaN(maxEventTime) || maxEventTime <= startMs) {
+        observationEnd = observationStart;
+        eligiblePostEvents = [];
+      } else {
+        observationEnd = new Date(maxEventTime).toISOString();
+        eligiblePostEvents = candidateEvents.filter(e => {
+          const t = new Date(e.timestamp).getTime();
+          return t >= startMs && t <= maxEventTime;
+        });
+      }
+    } else {
+      observationEnd = observationStart;
+      eligiblePostEvents = [];
+    }
+  }
 
   const observationWindow = {
-    start: currentState.observation_window?.start || new Date(deployTime).toISOString(),
-    end: currentState.observation_window?.end || new Date().toISOString(),
+    start: observationStart,
+    end: observationEnd,
     sample_event_count: eligiblePostEvents.length,
   };
+
+  // Immediate guard: Invalid or inverted observation window withholds authoritative annualization
+  if (isWindowInvalid) {
+    return {
+      ...currentState,
+      stage: 'OBSERVATION_ACTIVE',
+      is_simulated: false,
+      post_deployment_file_name: fileName,
+      observation_window: observationWindow,
+      observed_result: {
+        pre_cost_per_call_usd: currentState.baseline_window.avg_cost_per_call_usd,
+        post_cost_per_call_usd: 0,
+        observed_reduction_pct: 0,
+        annualized_realized_savings_usd: 0,
+        verification_confidence: 'INSUFFICIENT_OBSERVATION',
+        verification_notes: 'Authoritative verification withheld: observation window is invalid or inverted (end <= start).',
+        is_authoritative: false,
+      },
+    };
+  }
+
+  // Compute exclusion breakdown for transparent reporting
+  const outsideWindowCount = candidateEvents.length - eligiblePostEvents.length;
+  const nonComparableOrInvalid = productionEvents.length - candidateEvents.length - duplicateCount;
+  const totalExcluded = postDeploymentEvents.length - eligiblePostEvents.length;
+
+  const exclusionDetails: string[] = [];
+  if (simulatedEvents.length > 0) exclusionDetails.push(`${simulatedEvents.length} simulated`);
+  if (unknownProvenanceEvents.length > 0) exclusionDetails.push(`${unknownProvenanceEvents.length} unknown provenance`);
+  if (duplicateCount > 0) exclusionDetails.push(`${duplicateCount} duplicate IDs`);
+  if (outsideWindowCount > 0) exclusionDetails.push(`${outsideWindowCount} outside observation window`);
+  if (nonComparableOrInvalid > 0) exclusionDetails.push(`${nonComparableOrInvalid} non-comparable/invalid`);
+
+  const exclusionNote = exclusionDetails.length > 0
+    ? ` (${totalExcluded} events excluded: ${exclusionDetails.join(', ')}).`
+    : '';
 
   // Check minimum post-deployment observation threshold (>= 15 events)
   if (eligiblePostEvents.length < VERIFICATION_CONSTRAINTS.MIN_POST_DEPLOYMENT_EVENTS) {
@@ -478,7 +628,7 @@ export function evaluateVerification(
 
   let verificationNotes: string;
   if (isAuthoritative) {
-    verificationNotes = `Confirmed unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events.${exclusionNote}`;
+    verificationNotes = `Confirmed unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events inside observation window.${exclusionNote}`;
   } else if (isReductionThresholdMet && !annualization.valid) {
     verificationNotes = `Observed unit cost reduction of ${reductionPct.toFixed(1)}% across ${eligiblePostEvents.length} eligible production events, but annualization projection is withheld: ${annualization.reason}.${exclusionNote}`;
   } else {

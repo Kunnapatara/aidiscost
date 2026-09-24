@@ -422,3 +422,422 @@ describe('Cost Validation Integrity Suite (Critical Fix #2)', () => {
     assert.strictEqual(isValidEventData(ev2, deployTime), false);
   });
 });
+
+describe('Observation Population ↔ Observation Window Integrity Suite (Tests A - J)', () => {
+  // Test A — Event before observation start
+  it('Test A: Event before observation_window.start is strictly excluded from population and cost calculations', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    const deployTime = new Date('2026-09-01T00:00:00.000Z').getTime();
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: '2026-09-01T00:00:00.000Z',
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: '2026-09-01T00:00:00.000Z',
+      observation_window: {
+        start: '2026-09-05T00:00:00.000Z', // Observation window starts Sep 5
+        end: '2026-09-12T00:00:00.000Z',   // Observation window ends Sep 12 (7 days)
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // 5 events on Sep 2 (before observation window start) with high cost $0.05
+    const earlyEvents = createTestEvents(5, {
+      cost: 0.05,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-02T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    // 20 events inside window (Sep 6) with reduced cost $0.005
+    const validEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-06T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, [...earlyEvents, ...validEvents]);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    assert.strictEqual(isAuthoritativeVerified(evaluated), true);
+    // Only the 20 events inside the window participate
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 20);
+    // Cost must be $0.005, not tainted by the $0.05 early events
+    assert.strictEqual(evaluated.observed_result?.post_cost_per_call_usd, 0.005);
+    assert.strictEqual(evaluated.observed_result?.observed_reduction_pct, 50.0);
+    // Annualized: (20 * 0.005 / 7) * 365 = (0.10 / 7) * 365 = 5.21
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 5.21);
+  });
+
+  // Test B — Event after observation end
+  it('Test B: Event after observation_window.end is strictly excluded from population and cost calculations', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: '2026-09-01T00:00:00.000Z',
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: '2026-09-01T00:00:00.000Z',
+      observation_window: {
+        start: '2026-09-01T00:00:00.000Z',
+        end: '2026-09-08T00:00:00.000Z', // 7 days
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // 20 events inside window (Sep 3) at $0.005
+    const inWindowEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-03T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    // 10 events after window end (Sep 15) at $0.05
+    const lateEvents = createTestEvents(10, {
+      cost: 0.05,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-15T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, [...inWindowEvents, ...lateEvents]);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    assert.strictEqual(isAuthoritativeVerified(evaluated), true);
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 20);
+    assert.strictEqual(evaluated.observed_result?.post_cost_per_call_usd, 0.005);
+    assert.strictEqual(evaluated.observed_result?.observed_reduction_pct, 50.0);
+  });
+
+  // Test C — Events span a much longer period than observation window (81-day / 7-day error class)
+  it('Test C: Long-span telemetry (81 days) vs short window (7 days) — never divides 81-day volume by 7 days', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    const start = '2026-09-01T00:00:00.000Z';
+    const end = '2026-09-08T00:00:00.000Z'; // Exactly 7 days
+
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: start,
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: start,
+      observation_window: {
+        start,
+        end,
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // 20 events inside the 7-day window (Sep 2)
+    const inWindowEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date(start).getTime(),
+      stepMs: 3600_000,
+    });
+
+    // 100 events outside window spanning up to Nov 21 (81 days after deploy)
+    const outsideEvents = createTestEvents(100, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-09T00:00:00.000Z').getTime(),
+      stepMs: 40_000_000,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, [...inWindowEvents, ...outsideEvents]);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    // Crucial: Only the 20 events within the 7-day window participate
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 20);
+    // Verified annualization: (20 * 0.005 / 7) * 365 = $5.21
+    // (If all 120 events were naively divided by 7 days, it would have inflated to $31.29)
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 5.21);
+  });
+
+  // Test D — Explicit observation window
+  it('Test D: Explicit observation window sample_event_count strictly equals eligible events inside window', () => {
+    const finding = createMockProductionFinding();
+    const start = '2026-09-01T00:00:00.000Z';
+    const end = '2026-09-08T00:00:00.000Z';
+
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: start,
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: start,
+      observation_window: {
+        start,
+        end,
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // 5 events before start
+    const before = createTestEvents(5, {
+      is_simulated: false,
+      baseTimestamp: new Date('2026-08-30T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+    // 25 events inside window
+    const inside = createTestEvents(25, {
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-02T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+    // 15 events after window
+    const after = createTestEvents(15, {
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-10T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, [...before, ...inside, ...after]);
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 25);
+  });
+
+  // Test E — Event-derived observation window
+  it('Test E: Event-derived observation window sets end to max eligible production timestamp', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    const deployTime = '2026-09-01T00:00:00.000Z';
+    // State without explicit end (start === end, initial state)
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: deployTime,
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: deployTime,
+      observation_window: {
+        start: deployTime,
+        end: deployTime, // Unclosed placeholder
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // Exactly 20 events spanning from Sep 1 to Sep 5 (4 days duration)
+    const deployMs = new Date(deployTime).getTime();
+    const fourDaysMs = 4 * 86_400_000;
+    const postEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: deployMs,
+      stepMs: fourDaysMs / 20, // Final event at deployMs + 4 days
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, postEvents);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 20);
+    assert.strictEqual(evaluated.observation_window?.start, deployTime);
+
+    // End must match the max event timestamp (Sep 5)
+    const expectedEnd = new Date(deployMs + fourDaysMs).toISOString();
+    assert.strictEqual(evaluated.observation_window?.end, expectedEnd);
+
+    // Annualized: (20 * 0.005 / 4) * 365 = (0.10 / 4) * 365 = 9.125 -> 9.12
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 9.12);
+  });
+
+  // Test F — No valid observation window
+  it('Test F: Missing, inverted, or invalid observation window withholds authoritative verification', () => {
+    const finding = createMockProductionFinding();
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: '2026-09-01T00:00:00.000Z',
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: '2026-09-01T00:00:00.000Z',
+      observation_window: {
+        start: '2026-09-10T00:00:00.000Z',
+        end: '2026-09-05T00:00:00.000Z', // Inverted (end < start)
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    const postEvents = createTestEvents(25, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-06T00:00:00.000Z').getTime(),
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, postEvents);
+    assert.strictEqual(evaluated.stage, 'OBSERVATION_ACTIVE');
+    assert.strictEqual(isAuthoritativeVerified(evaluated), false);
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 0);
+    assert.ok(
+      evaluated.observed_result?.verification_notes.includes(
+        'Authoritative verification withheld: observation window is invalid or inverted'
+      )
+    );
+  });
+
+  // Test G — Current timestamp must not inflate/deflate historical telemetry
+  it('Test G: Historical telemetry imported does not use current wall-clock date as observation end', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    // Historical deployment on Jan 1, 2026
+    const deployTime = '2026-01-01T00:00:00.000Z';
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2025-12-25T00:00:00.000Z',
+        end: deployTime,
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: deployTime,
+      is_simulated: false,
+    };
+
+    // Historical telemetry: 20 events spanning 7 days (Jan 1 to Jan 8, 2026)
+    const deployMs = new Date(deployTime).getTime();
+    const sevenDaysMs = 7 * 86_400_000;
+    const postEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: deployMs,
+      stepMs: sevenDaysMs / 20,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, postEvents);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    // End must be the Jan 8, 2026 telemetry boundary, NOT today's date
+    const expectedHistoricalEnd = new Date(deployMs + sevenDaysMs).toISOString();
+    assert.strictEqual(evaluated.observation_window?.end, expectedHistoricalEnd);
+    // Annualized uses 7 days: (20 * 0.005 / 7) * 365 = 5.21
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 5.21);
+  });
+
+  // Test H — Existing differing-volume tests remain valid
+  it('Test H: Differing volume tests remain strictly valid (7,000 / 7d = $1,825; 2,000 / 5d = $730)', () => {
+    const res1 = calculateAnnualizedVerifiedSavings(0.005, 7000, '2026-09-01T00:00:00.000Z', '2026-09-08T00:00:00.000Z');
+    assert.strictEqual(res1.annualized_savings_usd, 1825.0);
+
+    const res2 = calculateAnnualizedVerifiedSavings(0.005, 2000, '2026-09-01T00:00:00.000Z', '2026-09-06T00:00:00.000Z');
+    assert.strictEqual(res2.annualized_savings_usd, 730.0);
+  });
+
+  // Test I — Commercial isolation
+  it('Test I: Observation window failure never produces a payable commercial outcome', () => {
+    const finding = createMockProductionFinding();
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: '2026-09-01T00:00:00.000Z',
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: '2026-09-01T00:00:00.000Z',
+      observation_window: {
+        start: '2026-09-10T00:00:00.000Z',
+        end: '2026-09-05T00:00:00.000Z', // Inverted
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    const postEvents = createTestEvents(25, { cost: 0.005, is_simulated: false });
+    const evaluated = evaluateVerification(deployedState, finding, postEvents);
+
+    const fee = calculateAuthoritativeOutcomeFee(evaluated, finding);
+    assert.strictEqual(fee.isPayable, false);
+    assert.strictEqual(fee.finalOutcomeFeeUsd, 0);
+  });
+
+  // Test J — Deduplication integrity
+  it('Test J: Duplicate event IDs in post-deployment telemetry are deduplicated and not double-counted', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0,
+    });
+
+    const start = '2026-09-01T00:00:00.000Z';
+    const end = '2026-09-08T00:00:00.000Z';
+
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: start,
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: start,
+      observation_window: {
+        start,
+        end,
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // 20 unique events
+    const uniqueEvents = createTestEvents(20, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date(start).getTime(),
+      stepMs: 3600_000,
+    });
+
+    // Duplicate 10 of those exact events (same event IDs)
+    const duplicateCopies = uniqueEvents.slice(0, 10).map(e => ({ ...e }));
+
+    const evaluated = evaluateVerification(deployedState, finding, [...uniqueEvents, ...duplicateCopies]);
+    assert.strictEqual(evaluated.stage, 'VERIFIED_RESULT');
+    // Sample count must be 20, NOT 30
+    assert.strictEqual(evaluated.observation_window?.sample_event_count, 20);
+    // Exclusion note should indicate the 10 duplicate IDs
+    assert.ok(evaluated.observed_result?.verification_notes.includes('10 duplicate IDs'));
+  });
+});
