@@ -493,6 +493,7 @@ export function evaluateVerification(
   let observationEnd: string;
   let eligiblePostEvents: AIEvent[] = [];
   let isWindowInvalid = false;
+  let invalidWindowReason = '';
 
   if (hasExplicitWindow) {
     observationStart = currentState.observation_window!.start;
@@ -502,6 +503,13 @@ export function evaluateVerification(
 
     if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
       isWindowInvalid = true;
+      invalidWindowReason = 'Authoritative verification withheld: observation window is invalid or inverted (end <= start).';
+      observationStart = currentState.observation_window!.start;
+      observationEnd = currentState.observation_window!.end;
+      eligiblePostEvents = [];
+    } else if (startMs < deployTime) {
+      isWindowInvalid = true;
+      invalidWindowReason = `Authoritative verification withheld: observation window begins before deployment timestamp (${observationStart} < ${currentState.deployment_timestamp || new Date(deployTime).toISOString()}).`;
       observationStart = currentState.observation_window!.start;
       observationEnd = currentState.observation_window!.end;
       eligiblePostEvents = [];
@@ -514,26 +522,38 @@ export function evaluateVerification(
     }
   } else {
     // Event-derived observation window:
-    // start = deployment boundary
-    // end = maximum timestamp among eligible production events (never arbitrary current time)
-    observationStart = currentState.observation_window?.start || currentState.deployment_timestamp || new Date(deployTime).toISOString();
-    const startMs = new Date(observationStart).getTime();
+    // Check if an explicit open/unclosed window start was provided that begins before deployment
+    const explicitStart = currentState.observation_window?.start;
+    const explicitStartMs = explicitStart ? new Date(explicitStart).getTime() : NaN;
 
-    if (candidateEvents.length > 0) {
-      const maxEventTime = Math.max(...candidateEvents.map(e => new Date(e.timestamp).getTime()));
-      if (isNaN(maxEventTime) || maxEventTime <= startMs) {
+    if (explicitStart && !isNaN(explicitStartMs) && explicitStartMs < deployTime) {
+      isWindowInvalid = true;
+      invalidWindowReason = `Authoritative verification withheld: observation window begins before deployment timestamp (${explicitStart} < ${currentState.deployment_timestamp || new Date(deployTime).toISOString()}).`;
+      observationStart = explicitStart;
+      observationEnd = currentState.observation_window?.end || explicitStart;
+      eligiblePostEvents = [];
+    } else {
+      // start = deployment boundary
+      // end = maximum timestamp among eligible production events (never arbitrary current time)
+      observationStart = currentState.deployment_timestamp || new Date(deployTime).toISOString();
+      const startMs = new Date(observationStart).getTime();
+
+      if (candidateEvents.length > 0) {
+        const maxEventTime = Math.max(...candidateEvents.map(e => new Date(e.timestamp).getTime()));
+        if (isNaN(maxEventTime) || maxEventTime <= startMs) {
+          observationEnd = observationStart;
+          eligiblePostEvents = [];
+        } else {
+          observationEnd = new Date(maxEventTime).toISOString();
+          eligiblePostEvents = candidateEvents.filter(e => {
+            const t = new Date(e.timestamp).getTime();
+            return t >= startMs && t <= maxEventTime;
+          });
+        }
+      } else {
         observationEnd = observationStart;
         eligiblePostEvents = [];
-      } else {
-        observationEnd = new Date(maxEventTime).toISOString();
-        eligiblePostEvents = candidateEvents.filter(e => {
-          const t = new Date(e.timestamp).getTime();
-          return t >= startMs && t <= maxEventTime;
-        });
       }
-    } else {
-      observationEnd = observationStart;
-      eligiblePostEvents = [];
     }
   }
 
@@ -543,7 +563,7 @@ export function evaluateVerification(
     sample_event_count: eligiblePostEvents.length,
   };
 
-  // Immediate guard: Invalid or inverted observation window withholds authoritative annualization
+  // Immediate guard: Invalid, inverted, or pre-deployment observation window withholds authoritative annualization
   if (isWindowInvalid) {
     return {
       ...currentState,
@@ -557,7 +577,7 @@ export function evaluateVerification(
         observed_reduction_pct: 0,
         annualized_realized_savings_usd: 0,
         verification_confidence: 'INSUFFICIENT_OBSERVATION',
-        verification_notes: 'Authoritative verification withheld: observation window is invalid or inverted (end <= start).',
+        verification_notes: invalidWindowReason || 'Authoritative verification withheld: observation window is invalid or inverted (end <= start).',
         is_authoritative: false,
       },
     };

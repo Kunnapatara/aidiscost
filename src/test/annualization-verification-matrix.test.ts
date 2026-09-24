@@ -840,4 +840,68 @@ describe('Observation Population ↔ Observation Window Integrity Suite (Tests A
     // Exclusion note should indicate the 10 duplicate IDs
     assert.ok(evaluated.observed_result?.verification_notes.includes('10 duplicate IDs'));
   });
+
+  // Test K — Observation window begins before deployment timestamp (deployment = 2026-09-01, start = 2026-08-25, end = 2026-09-08)
+  it('Test K: Observation window beginning before deployment timestamp is withheld from authoritative verification', () => {
+    const finding = createMockProductionFinding({
+      eligible_event_count: 1000,
+      baseline_spend_usd: 10.0, // $0.010/call
+    });
+
+    const deployedState: VerificationState = {
+      finding_id: finding.id,
+      stage: 'OBSERVATION_ACTIVE',
+      baseline_window: {
+        start: '2026-08-18T00:00:00.000Z',
+        end: '2026-09-01T00:00:00.000Z',
+        avg_cost_per_call_usd: 0.010,
+        sample_count: 1000,
+      },
+      deployment_timestamp: '2026-09-01T00:00:00.000Z',
+      observation_window: {
+        start: '2026-08-25T00:00:00.000Z',
+        end: '2026-09-08T00:00:00.000Z',
+        sample_event_count: 0,
+      },
+      is_simulated: false,
+    };
+
+    // Valid post-deployment production telemetry (25 events on 2026-09-02, cost $0.005 vs baseline $0.010)
+    const validPostTelemetry = createTestEvents(25, {
+      cost: 0.005,
+      is_simulated: false,
+      baseTimestamp: new Date('2026-09-02T00:00:00.000Z').getTime(),
+      stepMs: 3600_000,
+    });
+
+    const evaluated = evaluateVerification(deployedState, finding, validPostTelemetry);
+
+    // Invariant: VERIFIED_RESULT is false (stage remains OBSERVATION_ACTIVE)
+    assert.strictEqual(evaluated.stage === 'VERIFIED_RESULT', false);
+    assert.strictEqual(evaluated.stage, 'OBSERVATION_ACTIVE');
+
+    // Invariant: is_authoritative = false
+    assert.strictEqual(evaluated.observed_result?.is_authoritative, false);
+    assert.strictEqual(isAuthoritativeVerified(evaluated), false);
+
+    // Invariant: annualized_realized_savings_usd = 0
+    assert.strictEqual(evaluated.observed_result?.annualized_realized_savings_usd, 0);
+
+    // Truthful note explaining that the observation window begins before deployment
+    assert.ok(
+      evaluated.observed_result?.verification_notes.includes(
+        'observation window begins before deployment'
+      )
+    );
+
+    // Verify observation window start was NOT silently shifted
+    assert.strictEqual(evaluated.observation_window?.start, '2026-08-25T00:00:00.000Z');
+    assert.strictEqual(evaluated.observation_window?.end, '2026-09-08T00:00:00.000Z');
+
+    // Payable outcome fee is $0 because verification is not authoritative
+    const outcomeFee = calculateAuthoritativeOutcomeFee(evaluated, finding);
+    assert.strictEqual(outcomeFee.isPayable, false);
+    assert.strictEqual(outcomeFee.finalOutcomeFeeUsd, 0);
+    assert.strictEqual(outcomeFee.verifiedAnnualizedSavingsUsd, 0);
+  });
 });
