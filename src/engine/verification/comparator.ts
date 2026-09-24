@@ -159,60 +159,62 @@ export interface AnnualizedCalculation {
 }
 
 /**
- * Calculates annualized verified savings strictly derived from observed savings
- * across the actual baseline window duration.
- * Formula: (observed_savings / observed_days) * 365
- * Where observed_savings = costDeltaPerCall * sampleCount.
+ * Calculates annualized verified savings strictly derived from observed unit-cost reduction
+ * and actual post-deployment production event volume across the observation window duration.
+ * 
+ * Formula:
+ *   (observed_savings / post_deployment_observation_days) * 365
+ *   where observed_savings = costDeltaPerCall * postDeploymentEventCount
  * 
  * Strict guards:
- * - Withholds annualization if baseline start or end is missing
+ * - Withholds annualization if observation start or end is missing
  * - Withholds if timestamps are invalid or end <= start
  * - Withholds if duration is zero, negative, NaN, or non-finite
- * - Withholds if sample count is zero or non-positive
- * - Withholds if cost delta is non-positive, NaN, or non-finite
+ * - Withholds if post-deployment event count is zero or non-positive
+ * - Withholds if unit cost delta is non-positive, NaN, or non-finite
  */
 export function calculateAnnualizedVerifiedSavings(
   costDeltaPerCall: number,
-  sampleCount: number,
-  baselineStart?: string,
-  baselineEnd?: string
+  postDeploymentEventCount: number,
+  observationStart?: string,
+  observationEnd?: string
 ): AnnualizedCalculation {
   if (!Number.isFinite(costDeltaPerCall) || costDeltaPerCall <= 0) {
     return {
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Cost delta is zero, negative, or non-finite',
+      reason: 'Unit-cost delta is zero, negative, or non-finite',
     };
   }
 
-  if (!Number.isFinite(sampleCount) || sampleCount <= 0) {
+  if (!Number.isFinite(postDeploymentEventCount) || postDeploymentEventCount <= 0) {
     return {
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Sample count is zero, negative, or non-finite',
+      reason: 'Post-deployment event count is zero, negative, or non-finite',
     };
   }
 
-  if (!baselineStart || !baselineEnd || baselineStart === 'N/A' || baselineEnd === 'N/A') {
+  if (!observationStart || !observationEnd || observationStart === 'N/A' || observationEnd === 'N/A') {
     return {
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Baseline window timestamps are missing or undefined',
+      reason: 'Post-deployment observation window timestamps are missing or undefined',
     };
   }
 
-  const startTime = new Date(baselineStart).getTime();
-  const endTime = new Date(baselineEnd).getTime();
+  const startTime = new Date(observationStart).getTime();
+  const endTime = new Date(observationEnd).getTime();
 
   if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || isNaN(startTime) || isNaN(endTime)) {
     return {
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Baseline window timestamps are invalid or unparseable',
+      reason: 'Post-deployment observation window timestamps are invalid or unparseable',
     };
   }
 
@@ -221,7 +223,7 @@ export function calculateAnnualizedVerifiedSavings(
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Baseline window duration is zero or inverted (end <= start)',
+      reason: 'Post-deployment observation window duration is zero or inverted (end <= start)',
     };
   }
 
@@ -233,11 +235,11 @@ export function calculateAnnualizedVerifiedSavings(
       valid: false,
       annualized_savings_usd: 0,
       duration_days: 0,
-      reason: 'Baseline duration is non-positive or non-finite',
+      reason: 'Post-deployment observation duration is non-positive or non-finite',
     };
   }
 
-  const observedSavings = costDeltaPerCall * sampleCount;
+  const observedSavings = costDeltaPerCall * postDeploymentEventCount;
   const rawAnnualized = (observedSavings / durationDays) * 365;
 
   if (!Number.isFinite(rawAnnualized) || rawAnnualized <= 0) {
@@ -327,8 +329,8 @@ export function evaluateVerification(
     const validSimulated = simulatedEvents.filter(e => isValidEventData(e, deployTime));
 
     const observationWindow = {
-      start: new Date(deployTime).toISOString(),
-      end: new Date().toISOString(),
+      start: currentState.observation_window?.start || new Date(deployTime).toISOString(),
+      end: currentState.observation_window?.end || new Date().toISOString(),
       sample_event_count: validSimulated.length,
     };
 
@@ -338,12 +340,12 @@ export function evaluateVerification(
     const costDelta = preAvgCost - postAvgCost;
     const reductionPct = preAvgCost > 0 ? (costDelta / preAvgCost) * 100 : 0;
 
-    // Derived annualized projection from observed baseline duration
+    // Derived annualized projection from observed simulated volume and observation window
     const simAnnualization = calculateAnnualizedVerifiedSavings(
       costDelta,
-      currentState.baseline_window.sample_count,
-      currentState.baseline_window.start,
-      currentState.baseline_window.end
+      validSimulated.length,
+      observationWindow.start,
+      observationWindow.end
     );
     const simulatedAnnualSavings = simAnnualization.valid ? simAnnualization.annualized_savings_usd : 0;
 
@@ -422,8 +424,8 @@ export function evaluateVerification(
     : '';
 
   const observationWindow = {
-    start: new Date(deployTime).toISOString(),
-    end: new Date().toISOString(),
+    start: currentState.observation_window?.start || new Date(deployTime).toISOString(),
+    end: currentState.observation_window?.end || new Date().toISOString(),
     sample_event_count: eligiblePostEvents.length,
   };
 
@@ -461,13 +463,13 @@ export function evaluateVerification(
   const reductionPct = preAvgCost > 0 ? (costDelta / preAvgCost) * 100 : 0;
 
   // Realized annualized savings calculation:
-  // Derived strictly from observed savings across the actual baseline window duration
-  // Formula: (observed_savings / observed_days) * 365
+  // Derived strictly from observed savings across the actual post-deployment observation duration and event volume
+  // Formula: (observed_unit_reduction * post_deployment_event_count / post_deployment_observation_days) * 365
   const annualization = calculateAnnualizedVerifiedSavings(
     costDelta,
-    currentState.baseline_window.sample_count,
-    currentState.baseline_window.start,
-    currentState.baseline_window.end
+    eligiblePostEvents.length,
+    observationWindow.start,
+    observationWindow.end
   );
 
   const isReductionThresholdMet = reductionPct >= VERIFICATION_CONSTRAINTS.MIN_UNIT_REDUCTION_PCT;
