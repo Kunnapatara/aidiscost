@@ -3,18 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Finding, FixPackage } from '../types/domain';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
-import { Lock, Unlock, ArrowLeft, ArrowRight, ShieldCheck, CheckCircle2, Sliders, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Lock, Unlock, ArrowLeft, ArrowRight, ShieldCheck, CheckCircle2, Sliders, AlertTriangle, RefreshCw, CreditCard, ExternalLink } from 'lucide-react';
 import { COMMERCIAL_PRICING } from '../engine/billing/outcome';
+import { createFixPackageCheckout, getFindingEntitlement } from '../services/api';
 
 interface FixPackageViewProps {
   finding: Finding;
   fixPackage: FixPackage;
-  onUnlock: (findingId: string) => void;
+  onUnlock: (findingId: string, status?: 'PAID_UNLOCKED' | 'DEMO_UNLOCKED') => void;
   onBack: () => void;
   onProceedVerify: (findingId: string) => void;
+  isAuthenticated?: boolean;
+  onOpenAuth?: () => void;
 }
 
 export const FixPackageView: React.FC<FixPackageViewProps> = ({
@@ -23,15 +26,67 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
   onUnlock,
   onBack,
   onProceedVerify,
+  isAuthenticated = false,
+  onOpenAuth,
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  // Check server-side entitlement on mount if authenticated
+  useEffect(() => {
+    let isMounted = true;
+    if (isAuthenticated) {
+      getFindingEntitlement(finding.id).then((res) => {
+        if (isMounted && res && res.is_paid) {
+          onUnlock(finding.id, 'PAID_UNLOCKED');
+        }
+      });
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [finding.id, isAuthenticated, onUnlock]);
+
+  const handleLemonSqueezyCheckout = async () => {
+    setCheckoutError(null);
+
+    if (!isAuthenticated) {
+      if (onOpenAuth) onOpenAuth();
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const redirectUrl = `${window.location.origin}/?checkout=success&finding_id=${encodeURIComponent(finding.id)}#/finding/${finding.id}/fix`;
+      const res = await createFixPackageCheckout(finding.id, redirectUrl);
+      if (res.success && res.checkout_url) {
+        // Real Lemon Squeezy checkout redirect
+        window.location.href = res.checkout_url;
+        return;
+      }
+
+      if (res.error === 'ALREADY_ENTITLED') {
+        onUnlock(finding.id, 'PAID_UNLOCKED');
+        setIsProcessing(false);
+        return;
+      }
+
+      // Truthful error state when billing is not configured or fails
+      setCheckoutError(res.message || 'Fix Package checkout is not currently available.');
+    } catch (err) {
+      setCheckoutError((err as Error).message || 'Unable to connect to payment server.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const handleSimulatePayment = () => {
     setIsProcessing(true);
     setTimeout(() => {
-      onUnlock(finding.id);
+      onUnlock(finding.id, 'DEMO_UNLOCKED');
       setIsProcessing(false);
-    }, 700);
+    }, 500);
   };
 
   return (
@@ -58,7 +113,7 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
                 <Unlock className="w-3.5 h-3.5 text-amber-700" />
-                <span>PREVIEW UNLOCKED (ADAPTER READY)</span>
+                <span>DEMO PREVIEW ONLY (NON-AUTHORITATIVE)</span>
               </span>
             )
           ) : (
@@ -83,6 +138,22 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
           designed for your team to test, merge, and verify without vendor lock-in.
         </p>
       </div>
+
+      {/* Checkout Error / Unconfigured Notice */}
+      {checkoutError && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-bold block">Payment Gateway Notice</span>
+            <p className="leading-relaxed">{checkoutError}</p>
+            <p className="text-[11px] text-amber-800">
+              {checkoutError.includes('not currently available')
+                ? 'Lemon Squeezy environment credentials (LEMON_SQUEEZY_API_KEY, LEMON_SQUEEZY_STORE_ID, LEMON_SQUEEZY_VARIANT_ID) are pending configuration in the server environment.'
+                : 'Please check your connection and try again.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Unlock Callout Banner (if locked) */}
       {!fixPackage.unlocked && (
@@ -109,20 +180,22 @@ export const FixPackageView: React.FC<FixPackageViewProps> = ({
             <button
               type="button"
               id="btn-purchase-unlock"
-              onClick={handleSimulatePayment}
+              onClick={handleLemonSqueezyCheckout}
               disabled={isProcessing}
               className="px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition-colors shadow-sm flex items-center gap-2"
             >
               {isProcessing ? (
-                <span>Checking Entitlement...</span>
+                <span>Preparing Checkout...</span>
               ) : (
                 <>
-                  <Unlock className="w-4 h-4" />
-                  <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD} (Preview Mode)</span>
+                  <CreditCard className="w-4 h-4" />
+                  <span>Unlock Fix Package — ${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}</span>
                 </>
               )}
             </button>
-            <span className="text-[11px] text-slate-400">One-time deliverable (${COMMERCIAL_PRICING.FIX_PACKAGE_PRICE_USD}) &bull; Standalone MVP mode (no live credit card charged)</span>
+            <span className="text-[11px] text-slate-400">
+              One-time payment via Lemon Squeezy &bull; No recurring fee
+            </span>
           </div>
         </div>
       )}

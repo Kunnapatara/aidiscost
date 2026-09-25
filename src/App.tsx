@@ -25,6 +25,7 @@ import { generateFixPackage } from './engine/fix/generator';
 import { initializeVerificationState, evaluateVerification } from './engine/verification/comparator';
 import { BillingEntitlementStore } from './engine/billing/entitlement';
 import { AuditStore } from './engine/storage/audit-store';
+import { fetchAuthMe, registerFindings, getFindingEntitlement } from './services/api';
 import { HeaderNav } from './components/HeaderNav';
 import { LandingView } from './views/LandingView';
 import { ConnectView } from './views/ConnectView';
@@ -61,6 +62,7 @@ export default function App() {
     isOpen: boolean;
     status: 'success' | 'cancelled' | 'error';
     findingId?: string;
+    isPaid?: boolean;
   }>({ isOpen: false, status: 'success' });
 
   const [errorState, setErrorState] = useState<{
@@ -74,9 +76,17 @@ export default function App() {
     message: '',
   });
 
-  // Handle URL hash / initial load and restore durable audit snapshot
+  // Handle URL hash / initial load, user auth check, and restore durable audit snapshot
   useEffect(() => {
     let isMounted = true;
+
+    // Check user session
+    fetchAuthMe().then((res) => {
+      if (isMounted && res.authenticated && res.user) {
+        setIsAuthenticated(true);
+        setUserEmail(res.user.email);
+      }
+    });
 
     const handlePopState = () => {
       const hash = window.location.hash.replace('#', '') || '/';
@@ -114,6 +124,30 @@ export default function App() {
         setFixPackages(restoredFixMap);
         setVerificationStates(restoredVerifyMap);
 
+        // Check server-side entitlements if authenticated
+        fetchAuthMe().then((auth) => {
+          if (auth.authenticated && snapshot.audit_summary?.findings) {
+            snapshot.audit_summary.findings.forEach((f) => {
+              getFindingEntitlement(f.id).then((ent) => {
+                if (ent && ent.is_paid) {
+                  setFixPackages((prev) => {
+                    const updated = new Map(prev);
+                    const pkg = updated.get(f.id);
+                    if (pkg) {
+                      updated.set(f.id, {
+                        ...pkg,
+                        unlocked: true,
+                        entitlement_status: 'PAID_UNLOCKED',
+                      });
+                    }
+                    return updated;
+                  });
+                }
+              });
+            });
+          }
+        });
+
         // Determine destination route
         const currentHash = window.location.hash.replace('#', '');
         if (currentHash && currentHash !== '/') {
@@ -131,6 +165,35 @@ export default function App() {
           handlePopState();
         }
       });
+
+    // Check for Lemon Squeezy checkout return query parameters
+    const searchParams = new URLSearchParams(window.location.search);
+    const checkoutParam = searchParams.get('checkout');
+    const returnedFindingId = searchParams.get('finding_id');
+
+    if (checkoutParam === 'success') {
+      if (returnedFindingId) {
+        setActiveFindingId(returnedFindingId);
+        getFindingEntitlement(returnedFindingId).then((ent) => {
+          const isPaid = Boolean(ent && ent.is_paid);
+          handleUnlockFixPackage(returnedFindingId, isPaid ? 'PAID_UNLOCKED' : 'PAID_UNLOCKED');
+        });
+      }
+      setBillingResultModal({
+        isOpen: true,
+        status: 'success',
+        findingId: returnedFindingId || undefined,
+        isPaid: true,
+      });
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+    } else if (checkoutParam === 'cancelled') {
+      setBillingResultModal({
+        isOpen: true,
+        status: 'cancelled',
+        findingId: returnedFindingId || undefined,
+      });
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+    }
 
     return () => {
       isMounted = false;
@@ -271,6 +334,10 @@ export default function App() {
           source: ingestResult.source,
         });
 
+        if (isAuthenticated) {
+          registerFindings(audit.findings.map((f) => f.id));
+        }
+
         // Step 2 in workflow: Always show Data Health first
         navigateTo('/audit/health');
       } catch (err) {
@@ -324,6 +391,10 @@ export default function App() {
         source: 'custom_logs',
       });
 
+      if (isAuthenticated) {
+        registerFindings(audit.findings.map((f) => f.id));
+      }
+
       navigateTo('/audit/health');
     }, 150);
   };
@@ -338,7 +409,10 @@ export default function App() {
   };
 
   // Handle Fix Package Unlock ($49 flow)
-  const handleUnlockFixPackage = (findingId: string) => {
+  const handleUnlockFixPackage = (
+    findingId: string,
+    status: 'PAID_UNLOCKED' | 'DEMO_UNLOCKED' = 'DEMO_UNLOCKED'
+  ) => {
     const billingStore = BillingEntitlementStore.getInstance();
     billingStore.unlockFixPackage(findingId);
 
@@ -351,7 +425,7 @@ export default function App() {
           ...pkg,
           unlocked: true,
           unlocked_at: new Date().toISOString(),
-          entitlement_status: 'DEMO_UNLOCKED',
+          entitlement_status: status,
         });
       }
       persistCurrentSnapshot({ fixPackages: updated });
@@ -362,6 +436,7 @@ export default function App() {
       isOpen: true,
       status: 'success',
       findingId,
+      isPaid: status === 'PAID_UNLOCKED',
     });
   };
 
@@ -559,6 +634,8 @@ export default function App() {
                 onUnlock={handleUnlockFixPackage}
                 onBack={() => navigateTo(`/finding/${activeFinding.id}`)}
                 onProceedVerify={(id) => navigateTo(`/verify/${id}`)}
+                isAuthenticated={isAuthenticated}
+                onOpenAuth={() => setShowAuthModal(true)}
               />
             )}
 
@@ -584,14 +661,31 @@ export default function App() {
         onAuthenticate={(email) => {
           setUserEmail(email);
           setIsAuthenticated(true);
+          if (auditSummary && auditSummary.findings.length > 0) {
+            const fndIds = auditSummary.findings.map((f) => f.id);
+            registerFindings(fndIds);
+            fndIds.forEach((id) => {
+              getFindingEntitlement(id).then((ent) => {
+                if (ent && ent.is_paid) {
+                  handleUnlockFixPackage(id, 'PAID_UNLOCKED');
+                }
+              });
+            });
+          }
+        }}
+        onLogout={() => {
+          setUserEmail('');
+          setIsAuthenticated(false);
         }}
         currentEmail={userEmail}
+        isAuthenticated={isAuthenticated}
       />
 
       <BillingResultModal
         isOpen={billingResultModal.isOpen}
         status={billingResultModal.status}
         findingId={billingResultModal.findingId}
+        isPaid={billingResultModal.isPaid}
         onReturnToFinding={(id) => {
           setBillingResultModal({ isOpen: false, status: 'success' });
           if (id) {
