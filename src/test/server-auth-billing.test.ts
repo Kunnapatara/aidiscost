@@ -337,5 +337,202 @@ describe('AIDisCost Server — Auth, Entitlement & Billing Tests', () => {
       const dupeJson: any = await resDupe.json();
       assert.strictEqual(dupeJson.status, 'IDEMPOTENT_DUPLICATE');
     });
+
+    test('webhook ownership invariant: User A paying for finding owned by User B is rejected (403)', async () => {
+      // Create user B who owns a finding
+      const resB = await fetch(`${serverUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'user-b@target.org', password: 'Password123!' }),
+      });
+      const cookieB = resB.headers.get('set-cookie')!.split(';')[0];
+      const findingOwnedByB = 'fnd_owned_by_b_123';
+
+      await fetch(`${serverUrl}/api/findings/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieB,
+        },
+        body: JSON.stringify({ finding_ids: [findingOwnedByB] }),
+      });
+
+      // User A attempts to claim entitlement via webhook payment for User B's finding
+      const maliciousEventId = `ls_evt_malicious_${Date.now()}`;
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: maliciousEventId,
+          custom_data: {
+            user_id: findingOwnerId, // User A's ID
+            finding_id: findingOwnedByB, // Finding owned by User B
+            product: 'FIX_PACKAGE',
+          },
+        },
+        data: {
+          id: 'order_ls_attack_01',
+          attributes: {
+            status: 'paid',
+            identifier: 'ord_attack_01',
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 403, 'Must return 403 Forbidden for ownership mismatch');
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'FINDING_OWNERSHIP_MISMATCH');
+
+      // Verify User A did NOT receive entitlement for User B's finding
+      const hasEntitlement = await storage.hasActivePaidEntitlement(findingOwnerId, findingOwnedByB);
+      assert.strictEqual(hasEntitlement, false, 'User A must not receive entitlement for User B finding');
+    });
+
+    test('variant validation: rejects webhook with wrong variant ID', async () => {
+      process.env.LEMON_SQUEEZY_VARIANT_ID = 'variant_fix_pkg_49';
+
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_wrong_var_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: findingToUnlock,
+            product: 'FIX_PACKAGE',
+          },
+        },
+        data: {
+          id: 'order_wrong_var_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'wrong_subscription_variant_999',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 400);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'WRONG_VARIANT');
+    });
+
+    test('product validation: rejects webhook with wrong product identity', async () => {
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_wrong_prod_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: findingToUnlock,
+            product: 'UNAUTHORIZED_SUBSCRIPTION',
+          },
+        },
+        data: {
+          id: 'order_wrong_prod_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'variant_fix_pkg_49',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 400);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'INVALID_PRODUCT');
+    });
+  });
+
+  describe('Commercial Entitlement Authority & Simulation Isolation', () => {
+    test('DEMO_UNLOCKED does not create a server-side paid entitlement', async () => {
+      const demoFindingId = 'fnd_demo_client_preview_01';
+      // Server check returns false for demo unlocks
+      const hasPaid = await storage.hasActivePaidEntitlement('any_user', demoFindingId);
+      assert.strictEqual(hasPaid, false);
+    });
+
+    test('simulated verification cannot generate an authoritative commercial outcome fee', async () => {
+      const { calculateAuthoritativeOutcomeFee } = await import('../engine/billing/outcome');
+      const simulatedVerificationState: any = {
+        finding_id: 'fnd_123',
+        stage: 'VERIFIED_RESULT', // even if stage label says verified
+        is_simulated: true,       // marked simulated
+        baseline_window: { avg_cost_per_call_usd: 0.05 },
+        observed_result: {
+          annualized_realized_savings_usd: 12000,
+        },
+      };
+      const mockFinding: any = {
+        id: 'fnd_123',
+        annualized_projection_usd: 12000,
+        is_sample_data: false,
+      };
+
+      const result = calculateAuthoritativeOutcomeFee(simulatedVerificationState, mockFinding);
+      assert.strictEqual(result.finalOutcomeFeeUsd, 0, 'Simulated verification must result in $0 fee');
+      assert.strictEqual(result.isPayable, false);
+      assert.strictEqual(result.protectionTriggered, false);
+      assert.ok(result.protectionReason?.includes('simulated'));
+    });
+
+    test('sample data finding cannot generate an authoritative commercial outcome fee', async () => {
+      const { calculateAuthoritativeOutcomeFee } = await import('../engine/billing/outcome');
+      const realVerificationState: any = {
+        finding_id: 'fnd_sample_01',
+        stage: 'VERIFIED_RESULT',
+        is_simulated: false,
+        baseline_window: { avg_cost_per_call_usd: 0.05 },
+        observed_result: {
+          annualized_realized_savings_usd: 12000,
+          verification_confidence: 'HIGH',
+        },
+      };
+      const sampleFinding: any = {
+        id: 'fnd_sample_01',
+        annualized_projection_usd: 12000,
+        is_sample_data: true, // sample dataset
+      };
+
+      const result = calculateAuthoritativeOutcomeFee(realVerificationState, sampleFinding);
+      assert.strictEqual(result.finalOutcomeFeeUsd, 0, 'Sample dataset finding must result in $0 fee');
+      assert.strictEqual(result.isPayable, false);
+    });
   });
 });

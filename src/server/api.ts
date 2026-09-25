@@ -372,13 +372,25 @@ export function createApiRouter(): Router {
         const orderStatus = attributes?.status;
         const orderId = String(orderData?.id || attributes?.identifier || eventId);
 
+        // Product validation if product identity is in custom data
+        const product = customData?.product;
+        if (product && product !== 'FIX_PACKAGE') {
+          res.status(400).json({
+            error: 'INVALID_PRODUCT',
+            message: `Product "${product}" does not match FIX_PACKAGE.`,
+          });
+          return;
+        }
+
         // Variant validation if variant ID is configured
         if (config.variantId) {
-          const incomingVariantId = String(attributes?.first_order_item?.variant_id || '');
-          if (incomingVariantId && incomingVariantId !== config.variantId) {
+          const incomingVariantId = String(
+            attributes?.first_order_item?.variant_id || attributes?.variant_id || ''
+          );
+          if (!incomingVariantId || incomingVariantId !== config.variantId) {
             res.status(400).json({
               error: 'WRONG_VARIANT',
-              message: `Variant ID ${incomingVariantId} does not match configured Fix Package variant.`,
+              message: `Variant ID "${incomingVariantId}" does not match configured Fix Package variant.`,
             });
             return;
           }
@@ -408,6 +420,17 @@ export function createApiRouter(): Router {
         const user = await storage.getUserById(userId);
         if (!user) {
           res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
+          return;
+        }
+
+        // Enforce finding ownership invariant (Task 1):
+        // Finding must be owned by the paying user
+        const ownerId = await storage.getFindingOwner(findingId);
+        if (!ownerId || ownerId !== userId) {
+          res.status(403).json({
+            error: 'FINDING_OWNERSHIP_MISMATCH',
+            message: 'Finding is not registered to the paying user.',
+          });
           return;
         }
 
