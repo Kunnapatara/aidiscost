@@ -40,6 +40,13 @@ export function createDatabaseConnection(config?: DatabaseConfig): DatabaseInsta
  * Ensures local development, testing, and new instances work reliably.
  */
 export async function initializeDatabaseSchema(client: Client): Promise<void> {
+  try {
+    await client.execute('PRAGMA busy_timeout = 5000;');
+    await client.execute('PRAGMA journal_mode = WAL;');
+  } catch {
+    // In-memory or remote Turso may ignore or reject some PRAGMAs gracefully
+  }
+
   await client.batch(
     [
       `CREATE TABLE IF NOT EXISTS users (

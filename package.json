@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "db:migrate": "tsx scripts/migrate-db.ts",
     "migrate:json": "tsx scripts/migrate-json-to-sql.ts",
     "test": "node --import tsx --test src/test/*.test.ts"
   },

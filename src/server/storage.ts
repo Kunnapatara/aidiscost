@@ -271,11 +271,35 @@ export function getStorage(): IStorage {
   if (activeStorage) {
     return activeStorage;
   }
-  if (process.env.TURSO_DATABASE_URL) {
-    const { db, client } = createDatabaseConnection();
+
+  const isProduction = process.env.NODE_ENV === 'production';
+  const tursoUrl = process.env.TURSO_DATABASE_URL;
+
+  // In production, silent fallback to local/in-memory storage is strictly prohibited
+  if (isProduction) {
+    if (!tursoUrl) {
+      throw new Error(
+        '[FATAL PRODUCTION CONFIGURATION ERROR] In production (NODE_ENV=production), TURSO_DATABASE_URL is required. ' +
+        'Silent fallback to local in-memory or filesystem ServerStorage is strictly prohibited.'
+      );
+    }
+    if ((tursoUrl.startsWith('libsql://') || tursoUrl.startsWith('https://')) && !process.env.TURSO_AUTH_TOKEN) {
+      throw new Error(
+        '[FATAL PRODUCTION CONFIGURATION ERROR] In production with a remote Turso database, TURSO_AUTH_TOKEN is required.'
+      );
+    }
+    const { db, client } = createDatabaseConnection({ url: tursoUrl, authToken: process.env.TURSO_AUTH_TOKEN });
     activeStorage = new DrizzleStorageAdapter(db, client);
     return activeStorage;
   }
+
+  // Non-production environments (test / development)
+  if (tursoUrl) {
+    const { db, client } = createDatabaseConnection({ url: tursoUrl, authToken: process.env.TURSO_AUTH_TOKEN });
+    activeStorage = new DrizzleStorageAdapter(db, client);
+    return activeStorage;
+  }
+
   return ServerStorage.getInstance();
 }
 

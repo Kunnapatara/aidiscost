@@ -18,6 +18,12 @@ export async function createServerApp() {
   const app = express();
   const isProd = process.env.NODE_ENV === 'production';
 
+  // In production, validate persistent database configuration on boot (fail-closed)
+  if (isProd) {
+    const { getStorage } = await import('./src/server/storage');
+    getStorage();
+  }
+
   // Raw body capture for webhook signature verification
   app.use(
     express.json({

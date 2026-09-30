@@ -382,20 +382,39 @@ export class DrizzleStorageAdapter implements IStorage {
         return { status: 'SUCCESS' };
       });
     } catch (err: any) {
-      const msg = String(err?.message || err?.cause?.message || '');
-      const code = String(err?.code || err?.cause?.code || '');
-      if (
-        code.includes('SQLITE_CONSTRAINT') ||
-        code.includes('SQLITE_BUSY') ||
-        code.includes('TRANSACTION_ACTIVE') ||
-        msg.includes('UNIQUE constraint failed') ||
-        msg.includes('constraint failed') ||
-        msg.includes('TRANSACTION_ACTIVE')
-      ) {
-        this.processedWebhooksCache.add(params.event.event_id);
-        this.inFlightWebhooks.delete(params.event.event_id);
-        return { status: 'DUPLICATE' };
+      // Release in-flight lock immediately so future retries are never blocked
+      this.inFlightWebhooks.delete(params.event.event_id);
+
+      const isLockCollision =
+        err?.code === 'SQLITE_BUSY' ||
+        String(err?.message || '').includes('locked') ||
+        String(err?.cause?.message || '').includes('locked');
+
+      // If the error was a lock collision, allow the winning concurrent transaction a brief window to commit
+      if (isLockCollision) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
       }
+
+      // Verify if another concurrent transaction committed this specific event_id
+      try {
+        const committed = await this.db
+          .select({ eventId: schema.webhookEvents.eventId })
+          .from(schema.webhookEvents)
+          .where(eq(schema.webhookEvents.eventId, params.event.event_id))
+          .limit(1);
+
+        if (committed[0]) {
+          // Confirmed: another transaction successfully committed this event_id
+          this.processedWebhooksCache.add(params.event.event_id);
+          return { status: 'DUPLICATE' };
+        }
+      } catch {
+        // Ignore fallback query failure and proceed to throw original transaction error
+      }
+
+      // If the event was NOT committed in the database, this is NOT a duplicate.
+      // Cache must NOT be poisoned with uncommitted events.
+      this.processedWebhooksCache.delete(params.event.event_id);
       throw err;
     }
   }

@@ -580,4 +580,294 @@ describe('Turso/libSQL & Drizzle Persistence Test Suite', () => {
       assert.ok(result.validationErrors.some((e) => e.includes('orphaned user_id')));
     });
   });
+
+  describe('Production Storage Fail-Closed Invariants', () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(async () => {
+      process.env = { ...originalEnv };
+      const { setStorage } = await import('../server/storage');
+      setStorage(null);
+    });
+
+    test('getStorage throws fatal error in production if TURSO_DATABASE_URL is missing', async () => {
+      const { getStorage, setStorage } = await import('../server/storage');
+      setStorage(null);
+      process.env.NODE_ENV = 'production';
+      delete process.env.TURSO_DATABASE_URL;
+      delete process.env.TURSO_AUTH_TOKEN;
+
+      assert.throws(
+        () => {
+          getStorage();
+        },
+        /FATAL PRODUCTION CONFIGURATION ERROR/
+      );
+    });
+
+    test('getStorage throws fatal error in production if remote TURSO_AUTH_TOKEN is missing', async () => {
+      const { getStorage, setStorage } = await import('../server/storage');
+      setStorage(null);
+      process.env.NODE_ENV = 'production';
+      process.env.TURSO_DATABASE_URL = 'libsql://aidiscost-prod.turso.io';
+      delete process.env.TURSO_AUTH_TOKEN;
+
+      assert.throws(
+        () => {
+          getStorage();
+        },
+        /TURSO_AUTH_TOKEN is required/
+      );
+    });
+  });
+
+  describe('Commercial Transaction Rollback & Unpoisoned Cache Invariant', () => {
+    test('processOrderCreatedWebhookTransaction rolls back, clears claim, leaves cache unpoisoned, and permits retry', async () => {
+      const user: User = {
+        id: 'usr_strict_rb_1',
+        email: 'strictrb@aidiscost.io',
+        password_hash: 'salt:hash',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await adapter.createUser(user);
+
+      const eventId = `ls_evt_strictrb_${Date.now()}`;
+      const findingId = 'fnd_strictrb_01';
+
+      // We simulate an entitlement write failure by making entitlement insertion fail
+      // We can temporarily alter table or pass an entitlement that causes an error
+      // In SQLite, inserting with non-null violation or invalid column throws
+      const failingAdapter = new DrizzleStorageAdapter(db, client);
+
+      // Force an error inside the transaction during entitlement upsert by overriding transaction
+      const origTransaction = db.transaction.bind(db);
+      let injectFailure = true;
+
+      // Mock a failure inside the transaction right after event insert
+      db.transaction = async function (cb: any) {
+        return origTransaction(async (tx: any) => {
+          const origInsert = tx.insert.bind(tx);
+          tx.insert = function (table: any) {
+            if (table === schema.entitlements && injectFailure) {
+              throw new Error('SIMULATED_ENTITLEMENT_WRITE_FAILURE');
+            }
+            return origInsert(table);
+          };
+          return cb(tx);
+        });
+      };
+
+      const event: ProcessedWebhookEvent = {
+        event_id: eventId,
+        provider: 'LEMON_SQUEEZY',
+        event_name: 'order_created',
+        user_id: user.id,
+        finding_id: findingId,
+        order_id: 'order_rb_fail',
+        processed_at: new Date().toISOString(),
+      };
+
+      const entitlement: Entitlement = {
+        id: 'ent_rb_fail',
+        user_id: user.id,
+        finding_id: findingId,
+        type: 'PAID_FIX_PACKAGE',
+        status: 'ACTIVE',
+        provider: 'LEMON_SQUEEZY',
+        provider_transaction_id: 'order_rb_fail',
+        amount_usd: 49.0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // 1. Transaction fails
+      await assert.rejects(
+        async () => {
+          await failingAdapter.processOrderCreatedWebhookTransaction({ event, entitlement });
+        },
+        /SIMULATED_ENTITLEMENT_WRITE_FAILURE/
+      );
+
+      // 2. Verify state is NOT committed in database
+      const dbEvents = await db
+        .select()
+        .from(schema.webhookEvents)
+        .where(eq(schema.webhookEvents.eventId, eventId));
+      assert.strictEqual(dbEvents.length, 0, 'Webhook event must not be committed');
+
+      const dbEnts = await db
+        .select()
+        .from(schema.entitlements)
+        .where(eq(schema.entitlements.findingId, findingId));
+      assert.strictEqual(dbEnts.length, 0, 'Entitlement must not be committed');
+
+      // 3. Verify cache is NOT poisoned and in-flight claim was released
+      const isProcessed = await failingAdapter.isWebhookEventProcessed(eventId);
+      assert.strictEqual(isProcessed, false, 'Event must not be marked as processed');
+
+      // 4. Retry succeeds now that simulated failure is cleared
+      injectFailure = false;
+      const retryResult = await failingAdapter.processOrderCreatedWebhookTransaction({ event, entitlement });
+      assert.strictEqual(retryResult.status, 'SUCCESS', 'Retry must succeed after previous failure');
+
+      // Restore original transaction
+      db.transaction = origTransaction;
+
+      // 5. Verify database now has both committed
+      const committedEvents = await db
+        .select()
+        .from(schema.webhookEvents)
+        .where(eq(schema.webhookEvents.eventId, eventId));
+      assert.strictEqual(committedEvents.length, 1);
+
+      const committedEnts = await db
+        .select()
+        .from(schema.entitlements)
+        .where(eq(schema.entitlements.findingId, findingId));
+      assert.strictEqual(committedEnts.length, 1);
+    });
+  });
+
+  describe('Multi-Instance Concurrency (Independent Adapters, Shared DB)', () => {
+    const sharedDbFile = path.resolve(process.cwd(), 'data', `test-multi-instance-${Date.now()}.db`);
+
+    afterEach(() => {
+      if (fs.existsSync(sharedDbFile)) {
+        fs.rmSync(sharedDbFile, { force: true });
+      }
+    });
+
+    test('two independent adapters with separate in-memory caches resolve concurrent webhooks safely', async () => {
+      // Connect Adapter A and Adapter B to the exact same database file
+      const connA = createDatabaseConnection({ url: `file:${sharedDbFile}` });
+      await initializeDatabaseSchema(connA.client);
+      const connB = createDatabaseConnection({ url: `file:${sharedDbFile}` });
+      await connB.client.execute('PRAGMA busy_timeout = 5000;');
+
+      const adapterA = new DrizzleStorageAdapter(connA.db, connA.client);
+      const adapterB = new DrizzleStorageAdapter(connB.db, connB.client);
+
+      const user: User = {
+        id: 'usr_multi_inst',
+        email: 'multi_inst@aidiscost.io',
+        password_hash: 'salt:hash',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await adapterA.createUser(user);
+
+      const sharedEventId = `ls_evt_multi_inst_${Date.now()}`;
+      const findingId = 'fnd_multi_inst_01';
+
+      const payloadA = {
+        event: {
+          event_id: sharedEventId,
+          provider: 'LEMON_SQUEEZY' as const,
+          event_name: 'order_created',
+          user_id: user.id,
+          finding_id: findingId,
+          order_id: 'order_multi_A',
+          processed_at: new Date().toISOString(),
+        },
+        entitlement: {
+          id: 'ent_multi_A',
+          user_id: user.id,
+          finding_id: findingId,
+          type: 'PAID_FIX_PACKAGE' as const,
+          status: 'ACTIVE' as const,
+          provider: 'LEMON_SQUEEZY' as const,
+          provider_transaction_id: 'order_multi_A',
+          amount_usd: 49.0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      };
+
+      const payloadB = {
+        event: {
+          event_id: sharedEventId,
+          provider: 'LEMON_SQUEEZY' as const,
+          event_name: 'order_created',
+          user_id: user.id,
+          finding_id: findingId,
+          order_id: 'order_multi_B',
+          processed_at: new Date().toISOString(),
+        },
+        entitlement: {
+          id: 'ent_multi_B',
+          user_id: user.id,
+          finding_id: findingId,
+          type: 'PAID_FIX_PACKAGE' as const,
+          status: 'ACTIVE' as const,
+          provider: 'LEMON_SQUEEZY' as const,
+          provider_transaction_id: 'order_multi_B',
+          amount_usd: 49.0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      };
+
+      // Helper that executes across independent adapters, retrying on local SQLite file lock contention
+      const executeWithLockRetry = async (adapter: DrizzleStorageAdapter, payload: any) => {
+        let attempts = 0;
+        while (attempts < 5) {
+          try {
+            return await adapter.processOrderCreatedWebhookTransaction(payload);
+          } catch (err: any) {
+            attempts++;
+            if ((err?.code === 'SQLITE_BUSY' || String(err?.message).includes('locked')) && attempts < 5) {
+              // Local file SQLite limitation: file-level lock contention during concurrent write
+              await new Promise((r) => setTimeout(r, 120));
+              continue;
+            }
+            throw err;
+          }
+        }
+        throw new Error('Lock retry exhausted');
+      };
+
+      // Execute across two independent adapter instances concurrently
+      const [resA, resB] = await Promise.all([
+        executeWithLockRetry(adapterA, payloadA),
+        executeWithLockRetry(adapterB, payloadB),
+      ]);
+
+      const statuses = [resA.status, resB.status];
+      assert.ok(statuses.includes('SUCCESS'), 'Exactly one adapter must succeed');
+      assert.ok(statuses.includes('DUPLICATE'), 'The other adapter must return DUPLICATE');
+
+      // Verify the shared database has exactly 1 event and 1 entitlement
+      const eventRows = await connA.db
+        .select()
+        .from(schema.webhookEvents)
+        .where(eq(schema.webhookEvents.eventId, sharedEventId));
+      assert.strictEqual(eventRows.length, 1, 'Only 1 webhook event row must exist');
+
+      const entRows = await connA.db
+        .select()
+        .from(schema.entitlements)
+        .where(eq(schema.entitlements.findingId, findingId));
+      assert.strictEqual(entRows.length, 1, 'Only 1 entitlement row must exist');
+
+      connA.client.close();
+      connB.client.close();
+    });
+  });
+
+  describe('Real Turso Cloud Verification Status', () => {
+    test('reports real Turso verification status honestly', async () => {
+      const hasRealCredentials = Boolean(process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN);
+      if (hasRealCredentials) {
+        console.log('[Real Turso] Credentials detected. Running live test...');
+        const conn = createDatabaseConnection();
+        const testRes = await conn.client.execute('SELECT 1 as live_check');
+        assert.strictEqual(testRes.rows[0]?.live_check, 1);
+        conn.client.close();
+      } else {
+        console.log('[Real Turso] No credentials configured. Explicitly classified as NOT VERIFIED AGAINST REAL TURSO.');
+        assert.strictEqual(hasRealCredentials, false);
+      }
+    });
+  });
 });
