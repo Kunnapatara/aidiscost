@@ -351,12 +351,12 @@ export function createApiRouter(): Router {
 
       const storage = ServerStorage.getInstance();
 
-      // 2. Idempotency Check
-      const alreadyProcessed = await storage.isWebhookEventProcessed(eventId);
-      if (alreadyProcessed) {
+      // 2. Concurrency-Safe Idempotency Check & Atomic Claim
+      const claimStatus = storage.claimWebhookEvent(eventId);
+      if (claimStatus === 'DUPLICATE' || claimStatus === 'IN_FLIGHT') {
         res.status(200).json({
           status: 'IDEMPOTENT_DUPLICATE',
-          message: 'Event has already been processed.',
+          message: 'Event has already been processed or is currently being processed.',
         });
         return;
       }
@@ -372,22 +372,28 @@ export function createApiRouter(): Router {
         const orderStatus = attributes?.status;
         const orderId = String(orderData?.id || attributes?.identifier || eventId);
 
-        // Product validation if product identity is in custom data
+        // 3. Strict Product Identity Validation
+        // Must strictly equal 'FIX_PACKAGE'; reject missing, null, empty, wrong, or malformed
         const product = customData?.product;
-        if (product && product !== 'FIX_PACKAGE') {
+        if (typeof product !== 'string' || product.trim() !== 'FIX_PACKAGE') {
+          storage.releaseWebhookClaim(eventId);
           res.status(400).json({
             error: 'INVALID_PRODUCT',
-            message: `Product "${product}" does not match FIX_PACKAGE.`,
+            message: 'Webhook custom_data.product must be "FIX_PACKAGE".',
           });
           return;
         }
 
-        // Variant validation if variant ID is configured
+        // 4. Strict Variant Validation
+        // When variant ID is configured, incoming variant must be present and exactly match
         if (config.variantId) {
-          const incomingVariantId = String(
-            attributes?.first_order_item?.variant_id || attributes?.variant_id || ''
-          );
+          const rawVariant = attributes?.first_order_item?.variant_id ?? attributes?.variant_id;
+          const incomingVariantId =
+            typeof rawVariant === 'string' || typeof rawVariant === 'number'
+              ? String(rawVariant).trim()
+              : '';
           if (!incomingVariantId || incomingVariantId !== config.variantId) {
+            storage.releaseWebhookClaim(eventId);
             res.status(400).json({
               error: 'WRONG_VARIANT',
               message: `Variant ID "${incomingVariantId}" does not match configured Fix Package variant.`,
@@ -409,6 +415,7 @@ export function createApiRouter(): Router {
         }
 
         if (!userId || !findingId) {
+          storage.releaseWebhookClaim(eventId);
           res.status(400).json({
             error: 'MISSING_CUSTOM_DATA',
             message: 'Webhook custom_data must contain user_id and finding_id.',
@@ -419,14 +426,16 @@ export function createApiRouter(): Router {
         // Verify user exists
         const user = await storage.getUserById(userId);
         if (!user) {
+          storage.releaseWebhookClaim(eventId);
           res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
           return;
         }
 
-        // Enforce finding ownership invariant (Task 1):
-        // Finding must be owned by the paying user
+        // 5. Enforce finding ownership invariant:
+        // Finding must exist in storage AND have an authoritative owner AND owner === paying user
         const ownerId = await storage.getFindingOwner(findingId);
         if (!ownerId || ownerId !== userId) {
+          storage.releaseWebhookClaim(eventId);
           res.status(403).json({
             error: 'FINDING_OWNERSHIP_MISMATCH',
             message: 'Finding is not registered to the paying user.',
@@ -451,7 +460,7 @@ export function createApiRouter(): Router {
 
         await storage.createEntitlement(entitlement);
 
-        // Record event for idempotency
+        // Record event for idempotency (persists and clears in-flight claim)
         await storage.recordProcessedWebhook({
           event_id: eventId,
           provider: 'LEMON_SQUEEZY',

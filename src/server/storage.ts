@@ -22,6 +22,7 @@ export class ServerStorage {
   private data: StoreSchema;
   private saveTimeout: NodeJS.Timeout | null = null;
   private isTestMode = false;
+  private inFlightWebhooks: Set<string> = new Set<string>();
 
   private constructor(storageDir = 'data', fileName = 'aidiscost-db.json') {
     this.filePath = path.resolve(process.cwd(), storageDir, fileName);
@@ -83,6 +84,7 @@ export class ServerStorage {
   }
 
   clearAll(): void {
+    this.inFlightWebhooks.clear();
     this.data = {
       users: {},
       usersById: {},
@@ -210,11 +212,34 @@ export class ServerStorage {
 
   // --- Webhook Idempotency Operations ---
   async isWebhookEventProcessed(eventId: string): Promise<boolean> {
-    return Boolean(this.data.processedWebhooks[eventId]);
+    return Boolean(this.data.processedWebhooks[eventId] || this.inFlightWebhooks.has(eventId));
+  }
+
+  /**
+   * Atomically claims a webhook event ID for processing.
+   * Returns:
+   * - 'PROCEED' if the event is new and now claimed by the caller
+   * - 'DUPLICATE' if the event was already successfully processed
+   * - 'IN_FLIGHT' if another concurrent request is currently processing this event
+   */
+  claimWebhookEvent(eventId: string): 'PROCEED' | 'DUPLICATE' | 'IN_FLIGHT' {
+    if (this.data.processedWebhooks[eventId]) {
+      return 'DUPLICATE';
+    }
+    if (this.inFlightWebhooks.has(eventId)) {
+      return 'IN_FLIGHT';
+    }
+    this.inFlightWebhooks.add(eventId);
+    return 'PROCEED';
+  }
+
+  releaseWebhookClaim(eventId: string): void {
+    this.inFlightWebhooks.delete(eventId);
   }
 
   async recordProcessedWebhook(event: ProcessedWebhookEvent): Promise<void> {
     this.data.processedWebhooks[event.event_id] = event;
+    this.inFlightWebhooks.delete(event.event_id);
     this.flushToDisk();
   }
 }

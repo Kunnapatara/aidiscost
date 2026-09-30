@@ -478,6 +478,273 @@ describe('AIDisCost Server — Auth, Entitlement & Billing Tests', () => {
       const errJson: any = await res.json();
       assert.strictEqual(errJson.error, 'INVALID_PRODUCT');
     });
+
+    test('product validation: rejects webhook with missing product', async () => {
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_missing_prod_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: findingToUnlock,
+            // product is omitted
+          },
+        },
+        data: {
+          id: 'order_missing_prod_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'variant_fix_pkg_49',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 400);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'INVALID_PRODUCT');
+    });
+
+    test('product validation: rejects webhook with empty product', async () => {
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_empty_prod_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: findingToUnlock,
+            product: '   ',
+          },
+        },
+        data: {
+          id: 'order_empty_prod_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'variant_fix_pkg_49',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 400);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'INVALID_PRODUCT');
+    });
+
+    test('variant validation: rejects webhook with missing variant when variant ID is configured', async () => {
+      process.env.LEMON_SQUEEZY_VARIANT_ID = 'variant_fix_pkg_49';
+
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_missing_var_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: findingToUnlock,
+            product: 'FIX_PACKAGE',
+          },
+        },
+        data: {
+          id: 'order_missing_var_01',
+          attributes: {
+            status: 'paid',
+            // first_order_item has no variant_id
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 400);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'WRONG_VARIANT');
+    });
+
+    test('ownership lineage: rejects webhook for unknown/unregistered finding (403)', async () => {
+      const unknownFindingId = 'fnd_unknown_999999';
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: `ls_evt_unknown_fnd_${Date.now()}`,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: unknownFindingId,
+            product: 'FIX_PACKAGE',
+          },
+        },
+        data: {
+          id: 'order_unknown_fnd_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'variant_fix_pkg_49',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-signature': signature,
+        },
+        body: bodyString,
+      });
+
+      assert.strictEqual(res.status, 403);
+      const errJson: any = await res.json();
+      assert.strictEqual(errJson.error, 'FINDING_OWNERSHIP_MISMATCH');
+
+      // Verify no entitlement was created
+      const hasEntitlement = await storage.hasActivePaidEntitlement(findingOwnerId, unknownFindingId);
+      assert.strictEqual(hasEntitlement, false);
+    });
+
+    test('payment status: non-paid order (pending, refunded) does not create entitlement', async () => {
+      const pendingFindingId = 'fnd_pending_test_01';
+      await storage.registerFindingOwnership(pendingFindingId, findingOwnerId);
+
+      for (const nonPaidStatus of ['pending', 'refunded']) {
+        const payload = {
+          meta: {
+            event_name: 'order_created',
+            event_id: `ls_evt_nonpaid_${nonPaidStatus}_${Date.now()}`,
+            custom_data: {
+              user_id: findingOwnerId,
+              finding_id: pendingFindingId,
+              product: 'FIX_PACKAGE',
+            },
+          },
+          data: {
+            id: `order_${nonPaidStatus}_01`,
+            attributes: {
+              status: nonPaidStatus,
+              first_order_item: {
+                variant_id: 'variant_fix_pkg_49',
+              },
+            },
+          },
+        };
+
+        const bodyString = JSON.stringify(payload);
+        const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+        const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': signature,
+          },
+          body: bodyString,
+        });
+
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.status, 'IGNORED_NON_PAID');
+
+        const hasEntitlement = await storage.hasActivePaidEntitlement(findingOwnerId, pendingFindingId);
+        assert.strictEqual(hasEntitlement, false, `Status ${nonPaidStatus} must not create entitlement`);
+      }
+    });
+
+    test('concurrency hardening: concurrent webhook requests with same event_id result in exactly one entitlement', async () => {
+      const concurrentFindingId = 'fnd_concurrent_test_01';
+      await storage.registerFindingOwnership(concurrentFindingId, findingOwnerId);
+
+      const sharedEventId = `ls_evt_concurrent_${Date.now()}`;
+      const payload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: sharedEventId,
+          custom_data: {
+            user_id: findingOwnerId,
+            finding_id: concurrentFindingId,
+            product: 'FIX_PACKAGE',
+          },
+        },
+        data: {
+          id: 'order_concurrent_01',
+          attributes: {
+            status: 'paid',
+            first_order_item: {
+              variant_id: 'variant_fix_pkg_49',
+            },
+          },
+        },
+      };
+
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto.createHmac('sha256', webhookSecret).update(bodyString).digest('hex');
+
+      const sendWebhook = () =>
+        fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': signature,
+          },
+          body: bodyString,
+        });
+
+      // Fire both requests concurrently
+      const [res1, res2] = await Promise.all([sendWebhook(), sendWebhook()]);
+      const json1: any = await res1.json();
+      const json2: any = await res2.json();
+
+      const statuses = [json1.status, json2.status];
+      assert.ok(
+        statuses.includes('SUCCESS'),
+        'At least one concurrent request must succeed'
+      );
+      assert.ok(
+        statuses.includes('IDEMPOTENT_DUPLICATE'),
+        'The concurrent duplicate must be recognized as duplicate'
+      );
+
+      // Verify only one active entitlement was created
+      const hasEntitlement = await storage.hasActivePaidEntitlement(findingOwnerId, concurrentFindingId);
+      assert.strictEqual(hasEntitlement, true);
+    });
   });
 
   describe('Commercial Entitlement Authority & Simulation Isolation', () => {
