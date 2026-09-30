@@ -5,7 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { ServerStorage } from './storage';
+import { ServerStorage, getStorage } from './storage';
 import {
   AuthenticatedRequest,
   hashPassword,
@@ -49,7 +49,7 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
       const existing = await storage.getUserByEmail(email);
       if (existing) {
         res.status(409).json({ error: 'USER_EXISTS', message: 'A user with this email already exists.' });
@@ -102,7 +102,7 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
       const user = await storage.getUserByEmail(email);
       if (!user) {
         res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
@@ -146,7 +146,7 @@ export function createApiRouter(): Router {
     try {
       const token = req.cookies?.[SESSION_COOKIE_NAME] || req.sessionToken;
       if (token) {
-        const storage = ServerStorage.getInstance();
+        const storage = getStorage();
         await storage.deleteSession(token);
       }
       res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
@@ -186,7 +186,7 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
       const user = req.user!;
       const registered: string[] = [];
 
@@ -214,7 +214,7 @@ export function createApiRouter(): Router {
     try {
       const findingId = req.params.id;
       const user = req.user!;
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
 
       const ownerId = await storage.getFindingOwner(findingId);
       // Privacy boundary: If finding does not belong to user, return 404 to avoid leaking existence
@@ -252,7 +252,7 @@ export function createApiRouter(): Router {
       }
 
       const user = req.user!;
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
 
       // Check ownership
       const ownerId = await storage.getFindingOwner(finding_id);
@@ -349,7 +349,7 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
 
       // 2. Concurrency-Safe Idempotency Check & Atomic Claim
       const claimStatus = storage.claimWebhookEvent(eventId);
@@ -458,18 +458,36 @@ export function createApiRouter(): Router {
           updated_at: now,
         };
 
-        await storage.createEntitlement(entitlement);
-
-        // Record event for idempotency (persists and clears in-flight claim)
-        await storage.recordProcessedWebhook({
+        const eventData = {
           event_id: eventId,
-          provider: 'LEMON_SQUEEZY',
+          provider: 'LEMON_SQUEEZY' as const,
           event_name: eventName,
           user_id: userId,
           finding_id: findingId,
           order_id: orderId,
           processed_at: now,
-        });
+        };
+
+        // Execute atomic commercial transaction
+        let outcomeStatus: 'SUCCESS' | 'DUPLICATE' = 'SUCCESS';
+        if (typeof storage.processOrderCreatedWebhookTransaction === 'function') {
+          const txRes = await storage.processOrderCreatedWebhookTransaction({
+            event: eventData,
+            entitlement,
+          });
+          outcomeStatus = txRes.status;
+        } else {
+          await storage.createEntitlement(entitlement);
+          await storage.recordProcessedWebhook(eventData);
+        }
+
+        if (outcomeStatus === 'DUPLICATE') {
+          res.status(200).json({
+            status: 'IDEMPOTENT_DUPLICATE',
+            message: 'Event has already been processed or is currently being processed.',
+          });
+          return;
+        }
 
         res.status(200).json({
           status: 'SUCCESS',

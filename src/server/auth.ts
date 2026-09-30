@@ -5,7 +5,7 @@
 
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { ServerStorage } from './storage';
+import { ServerStorage, getStorage } from './storage';
 import { User } from './types';
 
 // Cookie configuration
@@ -71,7 +71,7 @@ export async function authenticate(
     }
 
     if (token) {
-      const storage = ServerStorage.getInstance();
+      const storage = getStorage();
       const sessionData = await storage.getSession(token);
       if (sessionData) {
         req.user = sessionData.user;

@@ -6,6 +6,11 @@
 import fs from 'fs';
 import path from 'path';
 import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent } from './types';
+import { IStorage } from './storage-interface';
+import { createDatabaseConnection } from './db/index';
+import { DrizzleStorageAdapter } from './db/adapter';
+
+export type { IStorage } from './storage-interface';
 
 interface StoreSchema {
   users: Record<string, User>; // email -> User
@@ -16,7 +21,7 @@ interface StoreSchema {
   processedWebhooks: Record<string, ProcessedWebhookEvent>; // event_id -> ProcessedWebhookEvent
 }
 
-export class ServerStorage {
+export class ServerStorage implements IStorage {
   private static instance: ServerStorage;
   private filePath: string;
   private data: StoreSchema;
@@ -242,4 +247,39 @@ export class ServerStorage {
     this.inFlightWebhooks.delete(event.event_id);
     this.flushToDisk();
   }
+
+  async processOrderCreatedWebhookTransaction(params: {
+    event: ProcessedWebhookEvent;
+    entitlement: Entitlement;
+  }): Promise<{ status: 'SUCCESS' | 'DUPLICATE' }> {
+    if (this.data.processedWebhooks[params.event.event_id]) {
+      this.inFlightWebhooks.delete(params.event.event_id);
+      return { status: 'DUPLICATE' };
+    }
+    const key = this.entitlementKey(params.entitlement.user_id, params.entitlement.finding_id);
+    this.data.entitlements[key] = params.entitlement;
+    this.data.processedWebhooks[params.event.event_id] = params.event;
+    this.inFlightWebhooks.delete(params.event.event_id);
+    this.flushToDisk();
+    return { status: 'SUCCESS' };
+  }
 }
+
+let activeStorage: IStorage | null = null;
+
+export function getStorage(): IStorage {
+  if (activeStorage) {
+    return activeStorage;
+  }
+  if (process.env.TURSO_DATABASE_URL) {
+    const { db, client } = createDatabaseConnection();
+    activeStorage = new DrizzleStorageAdapter(db, client);
+    return activeStorage;
+  }
+  return ServerStorage.getInstance();
+}
+
+export function setStorage(storage: IStorage | null): void {
+  activeStorage = storage;
+}
+
