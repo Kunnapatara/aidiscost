@@ -28,6 +28,20 @@ export function createApiRouter(): Router {
   const isProduction = process.env.NODE_ENV === 'production';
 
   // ==========================================
+  // SYSTEM HEALTH & READINESS ENDPOINTS
+  // ==========================================
+
+  // GET /api/health
+  router.get('/health', async (_req: Request, res: Response): Promise<void> => {
+    res.json({
+      status: 'ok',
+      service: 'aidiscost',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+    });
+  });
+
+  // ==========================================
   // AUTHENTICATION ENDPOINTS
   // ==========================================
 
