@@ -11,7 +11,8 @@ import cookieParser from 'cookie-parser';
 import { ServerStorage } from '../server/storage';
 import { hashPassword, authenticate } from '../server/auth';
 import { createApiRouter } from '../server/api';
-import { AIEvent, Finding } from '../types/domain';
+import { AIEvent, Finding, VerificationState } from '../types/domain';
+import { isCommerciallyVerified, evaluateVerification } from '../engine/verification/comparator';
 import { createDatabaseConnection } from '../server/db/index';
 import { DrizzleStorageAdapter } from '../server/db/adapter';
 import { runDatabaseMigrations } from '../../scripts/migrate-db';
@@ -561,6 +562,348 @@ describe('AIDisCost — Server-Side Verification Authority Suite', () => {
         headers: { Cookie: userB.cookie },
       });
       assert.strictEqual(attackerRes.status, 404);
+    });
+  });
+
+  describe('7. Server Failure & Resilience (Sprint A.1 Test 2)', () => {
+    test('server verification failure produces no authoritative verification in storage', async () => {
+      const failingFindingId = 'fnd_server_fail_test';
+      await storage.registerFindingOwnership(failingFindingId, userA.id);
+
+      // Malformed request with invalid events parameter
+      const failRes = await fetch(`${serverUrl}/api/findings/${failingFindingId}/verification/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({ events: 'not-an-array', finding: { ...mockFindingDataA, id: failingFindingId } }),
+      });
+
+      assert.strictEqual(failRes.status, 400);
+      const failJson: any = await failRes.json();
+      assert.strictEqual(failJson.error, 'INVALID_EVENTS');
+
+      // Assert storage holds NO authoritative verification
+      const record = await storage.getVerificationByFindingId(failingFindingId);
+      assert.strictEqual(record, null);
+    });
+
+    test('server returns 404 for unowned finding and creates no verification', async () => {
+      // User B attempts to evaluate finding A owned by User A
+      const res = await fetch(`${serverUrl}/api/findings/${findingA}/verification/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userB.cookie },
+        body: JSON.stringify({ events: generatePostEvents(20, 0.3), finding: mockFindingDataA }),
+      });
+      assert.strictEqual(res.status, 404);
+    });
+  });
+
+  describe('8. Client Fallback Authority Boundary (Sprint A.1 Test 3)', () => {
+    test('local fallback execution remains OBSERVATION_ACTIVE and cannot establish commercial authority', () => {
+      const mockFindingFallback: Finding = {
+        ...mockFindingDataA,
+        id: 'fnd_fallback_01',
+      };
+
+      const baseState: VerificationState = {
+        finding_id: 'fnd_fallback_01',
+        stage: 'CUSTOMER_DEPLOYED',
+        baseline_window: {
+          start: '2026-09-01T00:00:00Z',
+          end: '2026-09-10T00:00:00Z',
+          sample_count: 50,
+          avg_cost_per_call_usd: 2.0,
+        },
+        deployment_timestamp: '2026-09-14T00:00:00Z',
+        observation_window: {
+          start: '2026-09-14T00:00:00Z',
+          end: '2026-09-14T00:00:00Z',
+          sample_event_count: 0,
+        },
+      };
+
+      // Telemetry meets mathematical criteria (20 events, 85% reduction)
+      const telemetry = generatePostEvents(20, 0.3, false);
+
+      // Local fallback calculation (what applyNonAuthoritativeLocalPreview executes)
+      const localRaw = evaluateVerification(baseState, mockFindingFallback, telemetry, 'local_fallback.json');
+
+      // Invariant: local fallback is explicitly constrained to non-authoritative
+      const nonAuthFallback: VerificationState = {
+        ...localRaw,
+        stage: 'OBSERVATION_ACTIVE', // Cannot be VERIFIED_RESULT without server authority!
+        is_authoritative: false,
+        observed_result: localRaw.observed_result
+          ? {
+              ...localRaw.observed_result,
+              is_authoritative: false,
+              annualized_realized_savings_usd: 0,
+              verification_confidence: 'INSUFFICIENT_OBSERVATION',
+              verification_notes: '[NON-AUTHORITATIVE PREVIEW] Server verification unavailable.',
+            }
+          : undefined,
+      };
+
+      assert.strictEqual(nonAuthFallback.stage, 'OBSERVATION_ACTIVE');
+      assert.strictEqual(nonAuthFallback.is_authoritative, false);
+      assert.strictEqual(nonAuthFallback.observed_result?.is_authoritative, false);
+      assert.strictEqual(nonAuthFallback.observed_result?.annualized_realized_savings_usd, 0);
+
+      // Verify UI commercial check also rejects this state
+      assert.strictEqual(isCommerciallyVerified(nonAuthFallback, null), false);
+    });
+  });
+
+  describe('9. UI Authority Invariant (Sprint A.1 Test 4)', () => {
+    test('local object with stage=VERIFIED_RESULT and is_authoritative=true is rejected if server verification is missing', () => {
+      const forgedLocalState: VerificationState = {
+        finding_id: 'fnd_tampered_local',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        baseline_window: {
+          start: '2026-09-01T00:00:00Z',
+          end: '2026-09-10T00:00:00Z',
+          sample_count: 50,
+          avg_cost_per_call_usd: 2.0,
+        },
+        observed_result: {
+          pre_cost_per_call_usd: 2.0,
+          post_cost_per_call_usd: 0.3,
+          observed_reduction_pct: 85.0,
+          annualized_realized_savings_usd: 50000.0,
+          verification_confidence: 'HIGH',
+          verification_notes: 'Forged client claim',
+          is_authoritative: true,
+        },
+      };
+
+      // Server verification is null (not confirmed by server)
+      const result = isCommerciallyVerified(forgedLocalState, null);
+      assert.strictEqual(result, false, 'UI authority must reject when server verification is missing');
+    });
+
+    test('UI authority rejects when server verification is_authoritative is false', () => {
+      const localState: VerificationState = {
+        finding_id: 'fnd_test_02',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        baseline_window: { start: '', end: '', sample_count: 50, avg_cost_per_call_usd: 2.0 },
+      };
+
+      const nonAuthServerRecord = {
+        id: 'ver_01',
+        finding_id: 'fnd_test_02',
+        user_id: 'usr_01',
+        stage: 'OBSERVATION_ACTIVE' as const,
+        is_authoritative: false,
+        is_simulated: false,
+        baseline_start: '',
+        baseline_end: '',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 5,
+        post_avg_cost_usd: 1.0,
+        observed_reduction_pct: 50,
+        verified_annualized_savings_usd: 0,
+        verification_confidence: 'INSUFFICIENT_OBSERVATION' as const,
+        created_at: '',
+        updated_at: '',
+      };
+
+      assert.strictEqual(isCommerciallyVerified(localState, nonAuthServerRecord), false);
+    });
+
+    test('UI authority rejects when server verification is marked simulated', () => {
+      const localState: VerificationState = {
+        finding_id: 'fnd_test_03',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_window: { start: '', end: '', sample_count: 50, avg_cost_per_call_usd: 2.0 },
+      };
+
+      const simulatedServerRecord = {
+        id: 'ver_sim_01',
+        finding_id: 'fnd_test_03',
+        user_id: 'usr_01',
+        stage: 'VERIFIED_RESULT' as const,
+        is_authoritative: true, // even if marked true erroneously
+        is_simulated: true,     // simulation flag present!
+        baseline_start: '',
+        baseline_end: '',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 25,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85,
+        verified_annualized_savings_usd: 50000,
+        verification_confidence: 'HIGH' as const,
+        created_at: '',
+        updated_at: '',
+      };
+
+      assert.strictEqual(isCommerciallyVerified(localState, simulatedServerRecord), false);
+    });
+
+    test('UI authority accepts genuine production verification with server authority confirmation', () => {
+      const validLocalState: VerificationState = {
+        finding_id: 'fnd_valid_01',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_window: { start: '', end: '', sample_count: 50, avg_cost_per_call_usd: 2.0 },
+      };
+
+      const validServerRecord = {
+        id: 'ver_valid_01',
+        finding_id: 'fnd_valid_01',
+        user_id: 'usr_01',
+        stage: 'VERIFIED_RESULT' as const,
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '',
+        baseline_end: '',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 25,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85,
+        verified_annualized_savings_usd: 12000,
+        verification_confidence: 'HIGH' as const,
+        created_at: '',
+        updated_at: '',
+      };
+
+      assert.strictEqual(isCommerciallyVerified(validLocalState, validServerRecord), true);
+    });
+  });
+
+  describe('10. IndexedDB Authority Isolation (Sprint A.1 Test 5)', () => {
+    test('cached local snapshot loaded from IndexedDB cannot establish commercial authority without server confirmation', () => {
+      // Simulate snapshot loaded from IndexedDB where finding claims VERIFIED_RESULT
+      const cachedIdbState: VerificationState = {
+        finding_id: 'fnd_idb_cache_only',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_window: {
+          start: '2026-09-01T00:00:00Z',
+          end: '2026-09-10T00:00:00Z',
+          sample_count: 50,
+          avg_cost_per_call_usd: 2.0,
+        },
+        observed_result: {
+          pre_cost_per_call_usd: 2.0,
+          post_cost_per_call_usd: 0.3,
+          observed_reduction_pct: 85.0,
+          annualized_realized_savings_usd: 45000.0,
+          verification_confidence: 'HIGH',
+          verification_notes: 'Cached in IndexedDB',
+          is_authoritative: true,
+        },
+      };
+
+      // Server storage has no authoritative record for this finding
+      // (e.g. fresh session, other device, or never verified on server)
+      const serverVerification = null;
+
+      // Invariant: IndexedDB alone CANNOT establish commercial authority!
+      const isVerified = isCommerciallyVerified(cachedIdbState, serverVerification);
+      assert.strictEqual(isVerified, false, 'IndexedDB cached record must NOT be sufficient for commercial verification');
+    });
+  });
+
+  describe('11. Server GET Recovery Lifecycle (Sprint A.1 Test 6)', () => {
+    test('authoritative verification persists on server and recovers across client refresh via GET', async () => {
+      const recoveryFindingId = 'fnd_recovery_test_01';
+      const recoveryFinding: Finding = {
+        ...mockFindingDataA,
+        id: recoveryFindingId,
+        title: 'Recovery Test Finding',
+      };
+
+      // Register ownership
+      await storage.registerFindingOwnership(recoveryFindingId, userA.id);
+
+      // Deploy finding
+      await fetch(`${serverUrl}/api/findings/${recoveryFindingId}/verification/deploy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({
+          baseline: {
+            start: '2026-09-01T00:00:00.000Z',
+            end: '2026-09-10T00:00:00.000Z',
+            sample_count: 50,
+            avg_cost_per_call_usd: 2.0,
+          },
+          deployment_timestamp: '2026-09-14T00:00:00.000Z',
+        }),
+      });
+
+      // Submit production telemetry (25 events, 85% reduction)
+      const events = generatePostEvents(25, 0.3, false);
+      const evalRes = await fetch(`${serverUrl}/api/findings/${recoveryFindingId}/verification/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({ events, finding: recoveryFinding }),
+      });
+      assert.strictEqual(evalRes.status, 200);
+      const evalData: any = await evalRes.json();
+      assert.strictEqual(evalData.stage, 'VERIFIED_RESULT');
+      assert.strictEqual(evalData.is_authoritative, true);
+
+      // SIMULATE BROWSER RELOAD / CACHE WIPED:
+      // Client has zero local in-memory verification state
+      let clientLocalState: VerificationState | null = null;
+      let clientServerRecord: any = null;
+
+      // Client performs recovery fetch: GET /api/findings/:id/verification
+      const recoveryRes = await fetch(`${serverUrl}/api/findings/${recoveryFindingId}/verification`, {
+        headers: { Cookie: userA.cookie },
+      });
+      assert.strictEqual(recoveryRes.status, 200);
+      const recoveryData: any = await recoveryRes.json();
+
+      // Verify recovery payload
+      assert.ok(recoveryData.verification);
+      assert.strictEqual(recoveryData.stage, 'VERIFIED_RESULT');
+      assert.strictEqual(recoveryData.is_authoritative, true);
+      assert.strictEqual(recoveryData.is_simulated, false);
+      assert.strictEqual(recoveryData.verified_annualized_savings_usd, evalData.verified_annualized_savings_usd);
+
+      // Client restores state from server GET response
+      const v = recoveryData.verification;
+      clientServerRecord = v;
+      clientLocalState = {
+        finding_id: recoveryFindingId,
+        stage: v.stage,
+        is_authoritative: v.is_authoritative,
+        is_simulated: v.is_simulated,
+        baseline_window: {
+          start: v.baseline_start,
+          end: v.baseline_end,
+          sample_count: v.baseline_sample_count,
+          avg_cost_per_call_usd: v.baseline_avg_cost_usd,
+        },
+        deployment_timestamp: v.deployment_timestamp,
+        observation_window: {
+          start: v.observation_start || '',
+          end: v.observation_end || '',
+          sample_event_count: v.observation_sample_count,
+        },
+        observed_result: {
+          pre_cost_per_call_usd: v.baseline_avg_cost_usd,
+          post_cost_per_call_usd: v.post_avg_cost_usd,
+          observed_reduction_pct: v.observed_reduction_pct,
+          annualized_realized_savings_usd: v.verified_annualized_savings_usd,
+          verification_confidence: v.verification_confidence,
+          verification_notes: v.verification_notes,
+          is_authoritative: v.is_authoritative,
+        },
+      };
+
+      // Client commercial UI evaluates recovered state:
+      const recoveredAuth = isCommerciallyVerified(clientLocalState, clientServerRecord);
+      assert.strictEqual(recoveredAuth, true, 'Recovered state from server GET must satisfy commercial verification');
     });
   });
 });

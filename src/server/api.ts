@@ -300,6 +300,7 @@ export function createApiRouter(): Router {
         verification,
         stage: verification.stage,
         is_authoritative: verification.is_authoritative,
+        is_simulated: verification.is_simulated,
         verified_annualized_savings_usd: verification.verified_annualized_savings_usd,
       });
     } catch (err) {
@@ -452,6 +453,7 @@ export function createApiRouter(): Router {
       const evaluated = evaluateVerification(currentState, finding, events, file_name);
 
       const isAuth = isAuthoritativeVerified(evaluated);
+      evaluated.is_authoritative = isAuth;
       const verifiedAnnualSavings = getAuthoritativeVerifiedSavings(evaluated);
 
       const authRecord: AuthoritativeVerification = {

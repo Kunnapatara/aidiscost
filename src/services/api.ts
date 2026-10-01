@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { AuthoritativeVerification, VerificationState } from '../types/domain';
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -140,12 +142,12 @@ export async function createFixPackageCheckout(
 
 export interface VerificationApiResponse {
   finding_id: string;
-  verification: any;
+  verification: AuthoritativeVerification | null;
   stage: string;
   is_authoritative: boolean;
   is_simulated?: boolean;
   verified_annualized_savings_usd: number;
-  evaluated_state?: any;
+  evaluated_state?: VerificationState;
 }
 
 export async function getFindingVerification(findingId: string): Promise<VerificationApiResponse | null> {

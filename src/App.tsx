@@ -12,6 +12,7 @@ import {
   FixPackage,
   TelemetrySource,
   VerificationState,
+  AuthoritativeVerification,
 } from './types/domain';
 import { LangfuseAdapter } from './engine/adapters/langfuse';
 import { HeliconeAdapter } from './engine/adapters/helicone';
@@ -59,6 +60,7 @@ export default function App() {
   // Fix Packages & Verification Maps
   const [fixPackages, setFixPackages] = useState<Map<string, FixPackage>>(new Map());
   const [verificationStates, setVerificationStates] = useState<Map<string, VerificationState>>(new Map());
+  const [serverVerifications, setServerVerifications] = useState<Map<string, AuthoritativeVerification>>(new Map());
 
   // Supporting States
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
@@ -131,7 +133,7 @@ export default function App() {
         setFixPackages(restoredFixMap);
         setVerificationStates(restoredVerifyMap);
 
-        // Check server-side entitlements if authenticated
+        // Check server-side entitlements & authoritative verifications if authenticated
         fetchAuthMe().then((auth) => {
           if (auth.authenticated && snapshot.audit_summary?.findings) {
             snapshot.audit_summary.findings.forEach((f) => {
@@ -150,6 +152,48 @@ export default function App() {
                     return updated;
                   });
                 }
+              });
+
+              // SERVER GET IS THE RECOVERY PATH (Sprint A.1):
+              // Recover authoritative verification from server storage
+              getFindingVerification(f.id).then((verRes) => {
+                if (verRes?.verification) {
+                  const v = verRes.verification;
+                  setServerVerifications((prev) => {
+                    const next = new Map(prev);
+                    next.set(f.id, v);
+                    return next;
+                  });
+                  setVerificationStates((prev) => {
+                    const current = prev.get(f.id);
+                    if (!current) return prev;
+                    const next = new Map(prev);
+                    next.set(f.id, {
+                      ...current,
+                      stage: v.stage,
+                      is_authoritative: v.is_authoritative,
+                      is_simulated: v.is_simulated,
+                      deployment_timestamp: v.deployment_timestamp,
+                      observation_window: v.observation_start ? {
+                        start: v.observation_start,
+                        end: v.observation_end || v.observation_start,
+                        sample_event_count: v.observation_sample_count,
+                      } : current.observation_window,
+                      observed_result: {
+                        pre_cost_per_call_usd: v.baseline_avg_cost_usd,
+                        post_cost_per_call_usd: v.post_avg_cost_usd,
+                        observed_reduction_pct: v.observed_reduction_pct,
+                        annualized_realized_savings_usd: v.verified_annualized_savings_usd,
+                        verification_confidence: v.verification_confidence,
+                        verification_notes: v.verification_notes || '',
+                        is_authoritative: v.is_authoritative,
+                      },
+                    });
+                    return next;
+                  });
+                }
+              }).catch(() => {
+                // Ignore non-blocking network failure during recovery
               });
             });
           }
@@ -275,18 +319,25 @@ export default function App() {
         if (isAuthenticated) {
           getFindingVerification(findingId).then((res) => {
             if (res?.verification) {
+              const v = res.verification;
+              setServerVerifications((prev) => {
+                const next = new Map(prev);
+                next.set(findingId, v);
+                return next;
+              });
               setVerificationStates((prev) => {
                 const current = prev.get(findingId);
                 if (!current) return prev;
-                const v = res.verification;
                 const updated = new Map(prev);
                 updated.set(findingId, {
                   ...current,
                   stage: v.stage,
+                  is_authoritative: v.is_authoritative,
+                  is_simulated: v.is_simulated,
                   deployment_timestamp: v.deployment_timestamp,
                   observation_window: v.observation_start ? {
                     start: v.observation_start,
-                    end: v.observation_end,
+                    end: v.observation_end || v.observation_start,
                     sample_event_count: v.observation_sample_count,
                   } : current.observation_window,
                   observed_result: {
@@ -298,13 +349,24 @@ export default function App() {
                     verification_notes: v.verification_notes || '',
                     is_authoritative: v.is_authoritative,
                   },
-                  is_simulated: v.is_simulated,
                 });
                 return updated;
               });
+            } else {
+              setServerVerifications((prev) => {
+                if (!prev.has(findingId)) return prev;
+                const next = new Map(prev);
+                next.delete(findingId);
+                return next;
+              });
             }
           }).catch(() => {
-            // Ignore non-blocking hydration error
+            setServerVerifications((prev) => {
+              if (!prev.has(findingId)) return prev;
+              const next = new Map(prev);
+              next.delete(findingId);
+              return next;
+            });
           });
         }
       }
@@ -524,6 +586,54 @@ export default function App() {
     });
   };
 
+  // Non-authoritative local preview fallback:
+  // When server is unreachable, errors out, or user is unauthenticated,
+  // the client may compute a local preview for UI continuity.
+  // CRITICAL TRUST BOUNDARY INVARIANT (Sprint A.1):
+  // Local fallback MUST NOT produce commercial VERIFIED_RESULT or authoritative savings.
+  const applyNonAuthoritativeLocalPreview = (
+    findingId: string,
+    currentVerifyState: VerificationState,
+    fnd: Finding,
+    postEvents: AIEvent[],
+    fileName?: string,
+    reason?: string
+  ) => {
+    // 1. Clear any server authority claim
+    setServerVerifications((prev) => {
+      if (!prev.has(findingId)) return prev;
+      const updated = new Map(prev);
+      updated.delete(findingId);
+      return updated;
+    });
+
+    // 2. Perform local calculation for user observation preview
+    const localRaw = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
+
+    // 3. HARD ENFORCEMENT: Stage cannot be VERIFIED_RESULT, is_authoritative is false, savings = 0
+    const nonAuthPreviewState: VerificationState = {
+      ...localRaw,
+      stage: 'OBSERVATION_ACTIVE',
+      is_authoritative: false,
+      observed_result: localRaw.observed_result
+        ? {
+            ...localRaw.observed_result,
+            is_authoritative: false,
+            annualized_realized_savings_usd: 0,
+            verification_confidence: 'INSUFFICIENT_OBSERVATION',
+            verification_notes: `[NON-AUTHORITATIVE PREVIEW] ${reason || 'Server verification unavailable.'} Observed ${localRaw.observed_result.observed_reduction_pct.toFixed(1)}% delta across ${localRaw.observation_window?.sample_event_count || 0} events. Commercial verification and outcome fees require server evaluation.`,
+          }
+        : undefined,
+    };
+
+    setVerificationStates((prev) => {
+      const updated = new Map(prev);
+      updated.set(findingId, nonAuthPreviewState);
+      persistCurrentSnapshot({ verificationStates: updated });
+      return updated;
+    });
+  };
+
   // Handle Ingestion of Real Post-Deployment Telemetry
   const handleIngestRealObservation = (findingId: string, postEvents: AIEvent[], fileName?: string) => {
     const fnd = auditSummary?.findings.find((f) => f.id === findingId);
@@ -536,46 +646,92 @@ export default function App() {
     if (isAuthenticated) {
       evaluateFindingVerification(findingId, postEvents, fnd, fileName)
         .then((res) => {
-          if (res?.evaluated_state) {
+          if (res?.verification && res.is_authoritative) {
+            // Server authoritatively established verification!
+            setServerVerifications((prev) => {
+              const updated = new Map(prev);
+              updated.set(findingId, res.verification!);
+              return updated;
+            });
+            const authoritativeState: VerificationState = res.evaluated_state || {
+              ...currentVerifyState,
+              stage: res.verification.stage,
+              is_authoritative: true,
+              is_simulated: false,
+              deployment_timestamp: res.verification.deployment_timestamp,
+              observation_window: {
+                start: res.verification.observation_start || currentVerifyState.observation_window?.start || '',
+                end: res.verification.observation_end || currentVerifyState.observation_window?.end || '',
+                sample_event_count: res.verification.observation_sample_count,
+              },
+              observed_result: {
+                pre_cost_per_call_usd: res.verification.baseline_avg_cost_usd,
+                post_cost_per_call_usd: res.verification.post_avg_cost_usd,
+                observed_reduction_pct: res.verification.observed_reduction_pct,
+                annualized_realized_savings_usd: res.verification.verified_annualized_savings_usd,
+                verification_confidence: res.verification.verification_confidence,
+                verification_notes: res.verification.verification_notes || '',
+                is_authoritative: true,
+              },
+            };
             setVerificationStates((prev) => {
               const updated = new Map(prev);
-              updated.set(findingId, res.evaluated_state);
+              updated.set(findingId, authoritativeState);
               persistCurrentSnapshot({ verificationStates: updated });
               return updated;
             });
             return;
+          } else if (res?.verification) {
+            // Server evaluated but outcome is not authoritative (e.g., OBSERVATION_ACTIVE or simulation)
+            setServerVerifications((prev) => {
+              const updated = new Map(prev);
+              updated.set(findingId, res.verification!);
+              return updated;
+            });
+            if (res.evaluated_state) {
+              setVerificationStates((prev) => {
+                const updated = new Map(prev);
+                updated.set(findingId, res.evaluated_state!);
+                persistCurrentSnapshot({ verificationStates: updated });
+                return updated;
+              });
+              return;
+            }
           }
-          // Fallback to local evaluation if server response had no state
-          const localState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
-          setVerificationStates((prev) => {
-            const updated = new Map(prev);
-            updated.set(findingId, localState);
-            persistCurrentSnapshot({ verificationStates: updated });
-            return updated;
-          });
+
+          // Fallback to non-authoritative local preview if server response lacked full state
+          applyNonAuthoritativeLocalPreview(
+            findingId,
+            currentVerifyState,
+            fnd,
+            postEvents,
+            fileName,
+            'Server did not produce an authoritative verification.'
+          );
         })
         .catch((err) => {
-          console.warn('[ServerVerification] Server evaluate failed, falling back to local preview:', err);
-          const localState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
-          setVerificationStates((prev) => {
-            const updated = new Map(prev);
-            updated.set(findingId, localState);
-            persistCurrentSnapshot({ verificationStates: updated });
-            return updated;
-          });
+          console.warn('[ServerVerification] Server evaluate failed, falling back to non-authoritative preview:', err);
+          applyNonAuthoritativeLocalPreview(
+            findingId,
+            currentVerifyState,
+            fnd,
+            postEvents,
+            fileName,
+            `Server verification unavailable (${(err as Error).message || 'network error'}).`
+          );
         });
       return;
     }
 
-    // Unauthenticated: local preview only
-    const newVerifyState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
-
-    setVerificationStates((prev) => {
-      const updated = new Map(prev);
-      updated.set(findingId, newVerifyState);
-      persistCurrentSnapshot({ verificationStates: updated });
-      return updated;
-    });
+    // Unauthenticated: strictly non-authoritative local preview
+    applyNonAuthoritativeLocalPreview(
+      findingId,
+      currentVerifyState,
+      fnd,
+      postEvents,
+      fileName,
+      'User unauthenticated. Sign in required to establish authoritative server verification.'
+    );
   };
 
   // Handle Simulation of Post-Deployment Telemetry Observation Window
@@ -732,6 +888,7 @@ export default function App() {
               <VerifyView
                 finding={activeFinding}
                 verificationState={activeVerificationState}
+                authoritativeVerification={serverVerifications.get(activeFinding.id) || null}
                 onDeploy={handleMarkDeployed}
                 onIngestObservation={handleSimulatePostObservation}
                 onIngestRealObservation={handleIngestRealObservation}
@@ -758,12 +915,18 @@ export default function App() {
                   handleUnlockFixPackage(id, 'PAID_UNLOCKED');
                 }
               });
+              getFindingVerification(id).then((verRes) => {
+                if (verRes?.verification) {
+                  setServerVerifications((prev) => new Map(prev).set(id, verRes.verification!));
+                }
+              });
             });
           }
         }}
         onLogout={() => {
           setUserEmail('');
           setIsAuthenticated(false);
+          setServerVerifications(new Map());
         }}
         currentEmail={userEmail}
         isAuthenticated={isAuthenticated}

@@ -4,16 +4,18 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Finding, VerificationState, AIEvent } from '../types/domain';
+import { Finding, VerificationState, AIEvent, AuthoritativeVerification } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
 import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical, Upload, FileText } from 'lucide-react';
 import { calculateOutcomeFee, COMMERCIAL_PRICING } from '../engine/billing/outcome';
 import { IngestionPipeline } from '../engine/ingestion/pipeline';
+import { isCommerciallyVerified } from '../engine/verification/comparator';
 
 interface VerifyViewProps {
   finding: Finding;
   verificationState: VerificationState;
+  authoritativeVerification?: AuthoritativeVerification | null;
   onDeploy: (findingId: string) => void;
   onIngestObservation: (findingId: string, count: number) => void;
   onIngestRealObservation?: (findingId: string, events: AIEvent[], fileName: string) => void;
@@ -23,6 +25,7 @@ interface VerifyViewProps {
 export const VerifyView: React.FC<VerifyViewProps> = ({
   finding,
   verificationState,
+  authoritativeVerification,
   onDeploy,
   onIngestObservation,
   onIngestRealObservation,
@@ -38,8 +41,15 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
   const stage = verificationState.stage;
   const isBaseline = stage === 'BASELINE';
   const isObserving = stage === 'OBSERVATION_ACTIVE';
-  const isVerified = stage === 'VERIFIED_RESULT' && !verificationState.is_simulated;
   const isSimulated = Boolean(verificationState.is_simulated);
+
+  // CRITICAL TRUST BOUNDARY INVARIANT (Sprint A.1):
+  // Commercial verification requires SERVER-AUTHORITATIVE proof.
+  // Neither client-local state nor IndexedDB cache alone can establish commercial authority.
+  const isVerified = isCommerciallyVerified(verificationState, authoritativeVerification);
+
+  // Local unconfirmed preview detection: client claims VERIFIED_RESULT without confirmed server authority
+  const isUnconfirmedLocalPreview = stage === 'VERIFIED_RESULT' && !isVerified && !isSimulated;
 
   // Active observation result to display
   const activeResult = isVerified
@@ -97,14 +107,28 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
         </p>
       </div>
 
+      {/* Non-Authoritative Local Preview / Cache Alert */}
+      {isUnconfirmedLocalPreview && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-start gap-2.5 shadow-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold block">Non-Authoritative Local Preview / Cache</span>
+            <span className="text-slate-600">
+              This verification state has not been confirmed or established by the server authority. Local calculations or browser-cached entries cannot produce commercially authoritative verification or outcome fee eligibility. Authoritative verification requires server evaluation.
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* 4-Stage Verification Progression Bar */}
       <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-xs">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {stages.map((s) => {
-            const isCurrent = stage === s.key;
+            const isStage4 = s.key === 'VERIFIED_RESULT';
+            const isCurrent = isStage4 ? isVerified : stage === s.key;
             const isPassed =
               (stage === 'OBSERVATION_ACTIVE' && (s.key === 'BASELINE' || s.key === 'CUSTOMER_DEPLOYED')) ||
-              (stage === 'VERIFIED_RESULT' && s.key !== 'VERIFIED_RESULT');
+              (isVerified && !isStage4);
 
             return (
               <div

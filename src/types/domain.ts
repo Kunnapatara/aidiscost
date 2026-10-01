@@ -195,7 +195,38 @@ export interface VerificationState {
   observed_result?: VerificationObservationResult;
   simulated_result?: VerificationObservationResult;
   is_simulated?: boolean;
+  is_authoritative?: boolean;
   post_deployment_file_name?: string;
+}
+
+/**
+ * Server-Authoritative Verification Record
+ * Persisted exclusively on the server in authoritative storage.
+ */
+export interface AuthoritativeVerification {
+  id: string;
+  finding_id: string;
+  user_id: string;
+  stage: VerificationStage;
+  is_authoritative: boolean;
+  is_simulated: boolean;
+  baseline_start: string;
+  baseline_end: string;
+  baseline_sample_count: number;
+  baseline_avg_cost_usd: number;
+  deployment_timestamp?: string;
+  observation_start?: string;
+  observation_end?: string;
+  observation_sample_count: number;
+  post_avg_cost_usd: number;
+  observed_reduction_pct: number;
+  verified_annualized_savings_usd: number;
+  verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
+  verification_notes?: string;
+  post_deployment_file_name?: string;
+  verified_at?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /**

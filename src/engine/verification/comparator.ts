@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Finding, VerificationState, AIEvent, VerificationObservationResult } from '../../types/domain';
+import { Finding, VerificationState, AIEvent, VerificationObservationResult, AuthoritativeVerification } from '../../types/domain';
 
 /**
  * Enforced verification constraints
@@ -659,6 +659,7 @@ export function evaluateVerification(
     ...currentState,
     stage: isAuthoritative ? 'VERIFIED_RESULT' : 'OBSERVATION_ACTIVE',
     is_simulated: false,
+    is_authoritative: isAuthoritative,
     post_deployment_file_name: fileName,
     observation_window: observationWindow,
     observed_result: {
@@ -681,6 +682,7 @@ export function isAuthoritativeVerified(state: VerificationState): boolean {
   return (
     state.stage === 'VERIFIED_RESULT' &&
     state.is_simulated !== true &&
+    state.is_authoritative !== false &&
     state.observed_result?.is_authoritative === true &&
     (state.observed_result?.annualized_realized_savings_usd || 0) > 0
   );
@@ -694,4 +696,32 @@ export function getAuthoritativeVerifiedSavings(state: VerificationState): numbe
   return isAuthoritativeVerified(state)
     ? (state.observed_result?.annualized_realized_savings_usd || 0)
     : 0;
+}
+
+/**
+ * Commercial Authority Invariant Evaluator
+ * 
+ * Commercial verification strictly requires:
+ * 1. Server authoritative verification record exists
+ * 2. serverVerification.is_authoritative === true
+ * 3. serverVerification.is_simulated === false
+ * 4. serverVerification.stage === 'VERIFIED_RESULT'
+ * 5. clientState.stage === 'VERIFIED_RESULT'
+ * 6. clientState.is_simulated !== true
+ * 
+ * Neither local calculation, client-side fallback, nor IndexedDB cache
+ * can establish commercial authority on their own.
+ */
+export function isCommerciallyVerified(
+  clientState?: VerificationState | null,
+  serverVerification?: AuthoritativeVerification | null
+): boolean {
+  if (!clientState || !serverVerification) return false;
+  return (
+    serverVerification.is_authoritative === true &&
+    serverVerification.is_simulated === false &&
+    serverVerification.stage === 'VERIFIED_RESULT' &&
+    clientState.stage === 'VERIFIED_RESULT' &&
+    clientState.is_simulated !== true
+  );
 }
