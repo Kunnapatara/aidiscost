@@ -5,7 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from './types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification, OutcomeFeeObligation } from './types';
 import { IStorage } from './storage-interface';
 import { createDatabaseConnection } from './db/index';
 import { DrizzleStorageAdapter } from './db/adapter';
@@ -20,6 +20,8 @@ interface StoreSchema {
   entitlements: Record<string, Entitlement>; // `${user_id}:${finding_id}` -> Entitlement
   processedWebhooks: Record<string, ProcessedWebhookEvent>; // event_id -> ProcessedWebhookEvent
   verifications: Record<string, AuthoritativeVerification>; // finding_id -> AuthoritativeVerification
+  outcomeFeeObligations: Record<string, OutcomeFeeObligation>; // finding_id -> OutcomeFeeObligation
+  outcomeFeeObligationsById: Record<string, string>; // obligation_id -> finding_id
 }
 
 export class ServerStorage implements IStorage {
@@ -40,6 +42,8 @@ export class ServerStorage implements IStorage {
       entitlements: {},
       processedWebhooks: {},
       verifications: {},
+      outcomeFeeObligations: {},
+      outcomeFeeObligationsById: {},
     };
     this.loadFromDisk();
   }
@@ -64,6 +68,8 @@ export class ServerStorage implements IStorage {
           entitlements: parsed.entitlements || {},
           processedWebhooks: parsed.processedWebhooks || {},
           verifications: parsed.verifications || {},
+          outcomeFeeObligations: parsed.outcomeFeeObligations || {},
+          outcomeFeeObligationsById: parsed.outcomeFeeObligationsById || {},
         };
       }
     } catch (err) {
@@ -101,6 +107,8 @@ export class ServerStorage implements IStorage {
       entitlements: {},
       processedWebhooks: {},
       verifications: {},
+      outcomeFeeObligations: {},
+      outcomeFeeObligationsById: {},
     };
     this.flushToDisk();
   }

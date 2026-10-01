@@ -229,6 +229,26 @@ export interface AuthoritativeVerification {
   updated_at: string;
 }
 
+export type OutcomeFeeStatus = 'PAYABLE' | 'CHECKOUT_CREATED' | 'PAID' | 'SETTLED' | 'FAILED';
+
+export interface OutcomeFeeObligation {
+  id: string;
+  user_id: string;
+  finding_id: string;
+  verification_id: string;
+  verified_annualized_savings_usd: number;
+  fee_amount_usd: number;
+  currency: string;
+  status: OutcomeFeeStatus;
+  provider: 'LEMON_SQUEEZY' | 'DEMO_ADAPTER';
+  checkout_url?: string;
+  provider_order_id?: string;
+  provider_transaction_id?: string;
+  paid_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * Ingestion Result from any Source Adapter
  */

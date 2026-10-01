@@ -86,6 +86,28 @@ export const verifications = sqliteTable('verifications', {
   index('idx_verifications_user_id').on(table.userId),
 ]);
 
+export const outcomeFeeObligations = sqliteTable('outcome_fee_obligations', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  findingId: text('finding_id').notNull().references(() => findingOwnerships.findingId, { onDelete: 'cascade' }),
+  verificationId: text('verification_id').notNull().references(() => verifications.id, { onDelete: 'cascade' }),
+  verifiedAnnualizedSavingsUsd: real('verified_annualized_savings_usd').notNull(),
+  feeAmountUsd: real('fee_amount_usd').notNull(),
+  currency: text('currency').notNull().default('USD'),
+  status: text('status').notNull(), // 'PAYABLE' | 'CHECKOUT_CREATED' | 'PAID' | 'SETTLED' | 'FAILED'
+  provider: text('provider').notNull().default('LEMON_SQUEEZY'),
+  checkoutUrl: text('checkout_url'),
+  providerOrderId: text('provider_order_id'),
+  providerTransactionId: text('provider_transaction_id'),
+  paidAt: text('paid_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_outcome_fee_user_finding').on(table.userId, table.findingId),
+  index('idx_outcome_fee_finding_id').on(table.findingId),
+  index('idx_outcome_fee_user_id').on(table.userId),
+]);
+
 export type UserRow = typeof users.$inferSelect;
 export type UserInsert = typeof users.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;
@@ -98,3 +120,5 @@ export type WebhookEventRow = typeof webhookEvents.$inferSelect;
 export type WebhookEventInsert = typeof webhookEvents.$inferInsert;
 export type VerificationRow = typeof verifications.$inferSelect;
 export type VerificationInsert = typeof verifications.$inferInsert;
+export type OutcomeFeeObligationRow = typeof outcomeFeeObligations.$inferSelect;
+export type OutcomeFeeObligationInsert = typeof outcomeFeeObligations.$inferInsert;

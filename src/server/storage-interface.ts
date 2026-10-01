@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from './types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification, OutcomeFeeObligation } from './types';
 
 export interface IStorage {
   // --- User Operations ---
@@ -30,13 +30,20 @@ export interface IStorage {
   saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification>;
   getVerificationByFindingId(findingId: string): Promise<AuthoritativeVerification | null>;
 
+  // --- Outcome Fee Obligation Operations (Sprint B Preparation) ---
+  createOutcomeFeeObligation?(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
+  getOutcomeFeeObligation?(findingId: string): Promise<OutcomeFeeObligation | null>;
+  getOutcomeFeeObligationById?(obligationId: string): Promise<OutcomeFeeObligation | null>;
+  updateOutcomeFeeObligation?(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
+  hasPaidOutcomeFee?(userId: string, findingId: string): Promise<boolean>;
+
   // --- Webhook Idempotency Operations ---
   isWebhookEventProcessed(eventId: string): Promise<boolean>;
   claimWebhookEvent(eventId: string): 'PROCEED' | 'DUPLICATE' | 'IN_FLIGHT';
   releaseWebhookClaim(eventId: string): void;
   recordProcessedWebhook(event: ProcessedWebhookEvent): Promise<void>;
 
-  // --- Atomic Commercial Webhook Transaction ---
+  // --- Atomic Commercial Webhook Transactions ---
   /**
    * Atomically records the processed webhook event and activates/updates the entitlement
    * inside a single database transaction. If the event ID was already committed, returns 'DUPLICATE'.
@@ -44,6 +51,16 @@ export interface IStorage {
   processOrderCreatedWebhookTransaction?(params: {
     event: ProcessedWebhookEvent;
     entitlement: Entitlement;
+  }): Promise<{ status: 'SUCCESS' | 'DUPLICATE' }>;
+
+  /**
+   * Atomically records the processed webhook event and updates the outcome fee obligation status
+   * to 'PAID'/'SETTLED' inside a single database transaction. If the event ID was already committed, returns 'DUPLICATE'.
+   */
+  processOutcomeFeeWebhookTransaction?(params: {
+    event: ProcessedWebhookEvent;
+    obligation: OutcomeFeeObligation;
+    entitlement?: Entitlement;
   }): Promise<{ status: 'SUCCESS' | 'DUPLICATE' }>;
 
   // --- Test & Lifecycle Helpers ---
