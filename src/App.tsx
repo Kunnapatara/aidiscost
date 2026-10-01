@@ -25,7 +25,14 @@ import { generateFixPackage } from './engine/fix/generator';
 import { initializeVerificationState, evaluateVerification } from './engine/verification/comparator';
 import { BillingEntitlementStore } from './engine/billing/entitlement';
 import { AuditStore } from './engine/storage/audit-store';
-import { fetchAuthMe, registerFindings, getFindingEntitlement } from './services/api';
+import {
+  fetchAuthMe,
+  registerFindings,
+  getFindingEntitlement,
+  getFindingVerification,
+  recordFindingDeployment,
+  evaluateFindingVerification,
+} from './services/api';
 import { HeaderNav } from './components/HeaderNav';
 import { LandingView } from './views/LandingView';
 import { ConnectView } from './views/ConnectView';
@@ -258,10 +265,48 @@ export default function App() {
   };
 
   const parseAndSetRoute = (route: string) => {
-    if (route.startsWith('/finding/')) {
+    if (route.startsWith('/finding/') || route.startsWith('/verify/')) {
       const parts = route.split('/');
       if (parts[2]) {
-        setActiveFindingId(parts[2]);
+        const findingId = parts[2];
+        setActiveFindingId(findingId);
+
+        // If authenticated and visiting verify view, hydrate authoritative verification from server
+        if (isAuthenticated) {
+          getFindingVerification(findingId).then((res) => {
+            if (res?.verification) {
+              setVerificationStates((prev) => {
+                const current = prev.get(findingId);
+                if (!current) return prev;
+                const v = res.verification;
+                const updated = new Map(prev);
+                updated.set(findingId, {
+                  ...current,
+                  stage: v.stage,
+                  deployment_timestamp: v.deployment_timestamp,
+                  observation_window: v.observation_start ? {
+                    start: v.observation_start,
+                    end: v.observation_end,
+                    sample_event_count: v.observation_sample_count,
+                  } : current.observation_window,
+                  observed_result: {
+                    pre_cost_per_call_usd: v.baseline_avg_cost_usd,
+                    post_cost_per_call_usd: v.post_avg_cost_usd,
+                    observed_reduction_pct: v.observed_reduction_pct,
+                    annualized_realized_savings_usd: v.verified_annualized_savings_usd,
+                    verification_confidence: v.verification_confidence,
+                    verification_notes: v.verification_notes || '',
+                    is_authoritative: v.is_authoritative,
+                  },
+                  is_simulated: v.is_simulated,
+                });
+                return updated;
+              });
+            }
+          }).catch(() => {
+            // Ignore non-blocking hydration error
+          });
+        }
       }
     }
     setCurrentRoute(route);
@@ -446,13 +491,14 @@ export default function App() {
       const updated = new Map(prev);
       const current = updated.get(findingId);
       if (current) {
+        const deployTime = new Date().toISOString();
         updated.set(findingId, {
           ...current,
           stage: 'OBSERVATION_ACTIVE',
-          deployment_timestamp: new Date().toISOString(),
+          deployment_timestamp: deployTime,
           observation_window: {
-            start: new Date().toISOString(),
-            end: new Date().toISOString(),
+            start: deployTime,
+            end: deployTime,
             sample_event_count: 0,
           },
           observed_result: {
@@ -465,6 +511,13 @@ export default function App() {
               'Observation window initiated. Telemetry events will be monitored for unit cost reduction across comparable production traffic.',
           },
         });
+
+        // Persist deployment to server if user is authenticated
+        if (isAuthenticated) {
+          recordFindingDeployment(findingId, current.baseline_window, isSampleData).catch((err) => {
+            console.warn('[ServerVerification] Non-blocking deployment record error:', err);
+          });
+        }
       }
       persistCurrentSnapshot({ verificationStates: updated });
       return updated;
@@ -479,7 +532,42 @@ export default function App() {
     const currentVerifyState = verificationStates.get(findingId);
     if (!currentVerifyState) return;
 
-    // Evaluate verification with real events
+    // If authenticated, request authoritative verification evaluation from server
+    if (isAuthenticated) {
+      evaluateFindingVerification(findingId, postEvents, fnd, fileName)
+        .then((res) => {
+          if (res?.evaluated_state) {
+            setVerificationStates((prev) => {
+              const updated = new Map(prev);
+              updated.set(findingId, res.evaluated_state);
+              persistCurrentSnapshot({ verificationStates: updated });
+              return updated;
+            });
+            return;
+          }
+          // Fallback to local evaluation if server response had no state
+          const localState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
+          setVerificationStates((prev) => {
+            const updated = new Map(prev);
+            updated.set(findingId, localState);
+            persistCurrentSnapshot({ verificationStates: updated });
+            return updated;
+          });
+        })
+        .catch((err) => {
+          console.warn('[ServerVerification] Server evaluate failed, falling back to local preview:', err);
+          const localState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
+          setVerificationStates((prev) => {
+            const updated = new Map(prev);
+            updated.set(findingId, localState);
+            persistCurrentSnapshot({ verificationStates: updated });
+            return updated;
+          });
+        });
+      return;
+    }
+
+    // Unauthenticated: local preview only
     const newVerifyState = evaluateVerification(currentVerifyState, fnd, postEvents, fileName);
 
     setVerificationStates((prev) => {

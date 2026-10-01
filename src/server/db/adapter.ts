@@ -8,7 +8,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { Client } from '@libsql/client';
 import * as schema from './schema';
 import { IStorage } from '../storage-interface';
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent } from '../types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from '../types';
 
 export class DrizzleStorageAdapter implements IStorage {
   private db: LibSQLDatabase<typeof schema>;
@@ -29,6 +29,7 @@ export class DrizzleStorageAdapter implements IStorage {
   async clearAll(): Promise<void> {
     this.inFlightWebhooks.clear();
     this.processedWebhooksCache.clear();
+    await this.db.delete(schema.verifications);
     await this.db.delete(schema.webhookEvents);
     await this.db.delete(schema.entitlements);
     await this.db.delete(schema.findingOwnerships);
@@ -265,6 +266,100 @@ export class DrizzleStorageAdapter implements IStorage {
       entitlement.type === 'PAID_FIX_PACKAGE' &&
       entitlement.status === 'ACTIVE'
     );
+  }
+
+  // --- Authoritative Verification Operations ---
+  async saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification> {
+    await this.db
+      .insert(schema.verifications)
+      .values({
+        id: verification.id,
+        findingId: verification.finding_id,
+        userId: verification.user_id,
+        stage: verification.stage,
+        isAuthoritative: verification.is_authoritative,
+        isSimulated: verification.is_simulated,
+        baselineStart: verification.baseline_start,
+        baselineEnd: verification.baseline_end,
+        baselineSampleCount: verification.baseline_sample_count,
+        baselineAvgCostUsd: verification.baseline_avg_cost_usd,
+        deploymentTimestamp: verification.deployment_timestamp || null,
+        observationStart: verification.observation_start || null,
+        observationEnd: verification.observation_end || null,
+        observationSampleCount: verification.observation_sample_count,
+        postAvgCostUsd: verification.post_avg_cost_usd,
+        observedReductionPct: verification.observed_reduction_pct,
+        verifiedAnnualizedSavingsUsd: verification.verified_annualized_savings_usd,
+        verificationConfidence: verification.verification_confidence,
+        verificationNotes: verification.verification_notes || null,
+        postDeploymentFileName: verification.post_deployment_file_name || null,
+        verifiedAt: verification.verified_at || null,
+        createdAt: verification.created_at,
+        updatedAt: verification.updated_at,
+      })
+      .onConflictDoUpdate({
+        target: schema.verifications.findingId,
+        set: {
+          stage: verification.stage,
+          isAuthoritative: verification.is_authoritative,
+          isSimulated: verification.is_simulated,
+          baselineStart: verification.baseline_start,
+          baselineEnd: verification.baseline_end,
+          baselineSampleCount: verification.baseline_sample_count,
+          baselineAvgCostUsd: verification.baseline_avg_cost_usd,
+          deploymentTimestamp: verification.deployment_timestamp || null,
+          observationStart: verification.observation_start || null,
+          observationEnd: verification.observation_end || null,
+          observationSampleCount: verification.observation_sample_count,
+          postAvgCostUsd: verification.post_avg_cost_usd,
+          observedReductionPct: verification.observed_reduction_pct,
+          verifiedAnnualizedSavingsUsd: verification.verified_annualized_savings_usd,
+          verificationConfidence: verification.verification_confidence,
+          verificationNotes: verification.verification_notes || null,
+          postDeploymentFileName: verification.post_deployment_file_name || null,
+          verifiedAt: verification.verified_at || null,
+          updatedAt: verification.updated_at,
+        },
+      });
+
+    return verification;
+  }
+
+  async getVerificationByFindingId(findingId: string): Promise<AuthoritativeVerification | null> {
+    const rows = await this.db
+      .select()
+      .from(schema.verifications)
+      .where(eq(schema.verifications.findingId, findingId))
+      .limit(1);
+
+    if (!rows[0]) return null;
+    const r = rows[0];
+
+    return {
+      id: r.id,
+      finding_id: r.findingId,
+      user_id: r.userId,
+      stage: r.stage as any,
+      is_authoritative: Boolean(r.isAuthoritative),
+      is_simulated: Boolean(r.isSimulated),
+      baseline_start: r.baselineStart,
+      baseline_end: r.baselineEnd,
+      baseline_sample_count: r.baselineSampleCount,
+      baseline_avg_cost_usd: r.baselineAvgCostUsd,
+      deployment_timestamp: r.deploymentTimestamp || undefined,
+      observation_start: r.observationStart || undefined,
+      observation_end: r.observationEnd || undefined,
+      observation_sample_count: r.observationSampleCount,
+      post_avg_cost_usd: r.postAvgCostUsd,
+      observed_reduction_pct: r.observedReductionPct,
+      verified_annualized_savings_usd: r.verifiedAnnualizedSavingsUsd,
+      verification_confidence: r.verificationConfidence as any,
+      verification_notes: r.verificationNotes || undefined,
+      post_deployment_file_name: r.postDeploymentFileName || undefined,
+      verified_at: r.verifiedAt || undefined,
+      created_at: r.createdAt,
+      updated_at: r.updatedAt,
+    };
   }
 
   // --- Webhook Idempotency Operations ---

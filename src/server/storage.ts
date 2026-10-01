@@ -5,7 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent } from './types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from './types';
 import { IStorage } from './storage-interface';
 import { createDatabaseConnection } from './db/index';
 import { DrizzleStorageAdapter } from './db/adapter';
@@ -19,6 +19,7 @@ interface StoreSchema {
   findingOwnerships: Record<string, FindingOwnership>; // finding_id -> FindingOwnership
   entitlements: Record<string, Entitlement>; // `${user_id}:${finding_id}` -> Entitlement
   processedWebhooks: Record<string, ProcessedWebhookEvent>; // event_id -> ProcessedWebhookEvent
+  verifications: Record<string, AuthoritativeVerification>; // finding_id -> AuthoritativeVerification
 }
 
 export class ServerStorage implements IStorage {
@@ -38,6 +39,7 @@ export class ServerStorage implements IStorage {
       findingOwnerships: {},
       entitlements: {},
       processedWebhooks: {},
+      verifications: {},
     };
     this.loadFromDisk();
   }
@@ -61,6 +63,7 @@ export class ServerStorage implements IStorage {
           findingOwnerships: parsed.findingOwnerships || {},
           entitlements: parsed.entitlements || {},
           processedWebhooks: parsed.processedWebhooks || {},
+          verifications: parsed.verifications || {},
         };
       }
     } catch (err) {
@@ -97,6 +100,7 @@ export class ServerStorage implements IStorage {
       findingOwnerships: {},
       entitlements: {},
       processedWebhooks: {},
+      verifications: {},
     };
     this.flushToDisk();
   }
@@ -213,6 +217,17 @@ export class ServerStorage implements IStorage {
       entitlement.type === 'PAID_FIX_PACKAGE' &&
       entitlement.status === 'ACTIVE'
     );
+  }
+
+  // --- Authoritative Verification Operations ---
+  async saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification> {
+    this.data.verifications[verification.finding_id] = verification;
+    this.flushToDisk();
+    return verification;
+  }
+
+  async getVerificationByFindingId(findingId: string): Promise<AuthoritativeVerification | null> {
+    return this.data.verifications[findingId] || null;
   }
 
   // --- Webhook Idempotency Operations ---

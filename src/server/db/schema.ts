@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { sqliteTable, text, real, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, real, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -57,6 +57,35 @@ export const webhookEvents = sqliteTable('webhook_events', {
   processedAt: text('processed_at').notNull(),
 });
 
+export const verifications = sqliteTable('verifications', {
+  id: text('id').primaryKey(),
+  findingId: text('finding_id').notNull().references(() => findingOwnerships.findingId, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  stage: text('stage').notNull(), // 'BASELINE' | 'CUSTOMER_DEPLOYED' | 'OBSERVATION_ACTIVE' | 'VERIFIED_RESULT'
+  isAuthoritative: integer('is_authoritative', { mode: 'boolean' }).notNull().default(false),
+  isSimulated: integer('is_simulated', { mode: 'boolean' }).notNull().default(false),
+  baselineStart: text('baseline_start').notNull(),
+  baselineEnd: text('baseline_end').notNull(),
+  baselineSampleCount: integer('baseline_sample_count').notNull(),
+  baselineAvgCostUsd: real('baseline_avg_cost_usd').notNull(),
+  deploymentTimestamp: text('deployment_timestamp'),
+  observationStart: text('observation_start'),
+  observationEnd: text('observation_end'),
+  observationSampleCount: integer('observation_sample_count').notNull().default(0),
+  postAvgCostUsd: real('post_avg_cost_usd').notNull().default(0),
+  observedReductionPct: real('observed_reduction_pct').notNull().default(0),
+  verifiedAnnualizedSavingsUsd: real('verified_annualized_savings_usd').notNull().default(0),
+  verificationConfidence: text('verification_confidence').notNull().default('INSUFFICIENT_OBSERVATION'),
+  verificationNotes: text('verification_notes'),
+  postDeploymentFileName: text('post_deployment_file_name'),
+  verifiedAt: text('verified_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_verifications_finding_id').on(table.findingId),
+  index('idx_verifications_user_id').on(table.userId),
+]);
+
 export type UserRow = typeof users.$inferSelect;
 export type UserInsert = typeof users.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;
@@ -67,3 +96,5 @@ export type EntitlementRow = typeof entitlements.$inferSelect;
 export type EntitlementInsert = typeof entitlements.$inferInsert;
 export type WebhookEventRow = typeof webhookEvents.$inferSelect;
 export type WebhookEventInsert = typeof webhookEvents.$inferInsert;
+export type VerificationRow = typeof verifications.$inferSelect;
+export type VerificationInsert = typeof verifications.$inferInsert;

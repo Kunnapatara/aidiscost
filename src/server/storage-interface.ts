@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent } from './types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from './types';
 
 export interface IStorage {
   // --- User Operations ---
@@ -25,6 +25,10 @@ export interface IStorage {
   createEntitlement(entitlement: Entitlement): Promise<Entitlement>;
   getEntitlement(userId: string, findingId: string): Promise<Entitlement | null>;
   hasActivePaidEntitlement(userId: string, findingId: string): Promise<boolean>;
+
+  // --- Authoritative Verification Operations ---
+  saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification>;
+  getVerificationByFindingId(findingId: string): Promise<AuthoritativeVerification | null>;
 
   // --- Webhook Idempotency Operations ---
   isWebhookEventProcessed(eventId: string): Promise<boolean>;

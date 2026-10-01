@@ -137,3 +137,66 @@ export async function createFixPackageCheckout(
     };
   }
 }
+
+export interface VerificationApiResponse {
+  finding_id: string;
+  verification: any;
+  stage: string;
+  is_authoritative: boolean;
+  is_simulated?: boolean;
+  verified_annualized_savings_usd: number;
+  evaluated_state?: any;
+}
+
+export async function getFindingVerification(findingId: string): Promise<VerificationApiResponse | null> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/verification`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function recordFindingDeployment(
+  findingId: string,
+  baseline: {
+    start: string;
+    end: string;
+    sample_count: number;
+    avg_cost_per_call_usd: number;
+  },
+  isSampleData?: boolean
+): Promise<VerificationApiResponse | null> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/verification/deploy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseline, is_sample_data: isSampleData }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function evaluateFindingVerification(
+  findingId: string,
+  events: any[],
+  finding: any,
+  fileName?: string
+): Promise<VerificationApiResponse | null> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/verification/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events, finding, file_name: fileName }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+

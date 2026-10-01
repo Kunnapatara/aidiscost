@@ -21,7 +21,13 @@ import {
   verifyLemonSqueezySignature,
   createLemonSqueezyCheckout,
 } from './lemon-squeezy';
-import { User, Entitlement } from './types';
+import { User, Entitlement, AuthoritativeVerification } from './types';
+import {
+  evaluateVerification,
+  isAuthoritativeVerified,
+  getAuthoritativeVerifiedSavings,
+} from '../engine/verification/comparator';
+import { Finding, AIEvent, VerificationState } from '../types/domain';
 
 export function createApiRouter(): Router {
   const router = Router();
@@ -249,6 +255,246 @@ export function createApiRouter(): Router {
       });
     } catch (err) {
       res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to retrieve entitlement.' });
+    }
+  });
+
+  // ==========================================
+  // AUTHORITATIVE VERIFICATION ENDPOINTS
+  // ==========================================
+
+  // GET /api/findings/:id/verification
+  // Retrieves the authoritative server-side verification state for a finding
+  router.get('/findings/:id/verification', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      // Privacy boundary: if finding does not belong to user, return 404 to avoid leaking existence
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      const verification = await storage.getVerificationByFindingId(findingId);
+      if (!verification) {
+        res.json({
+          finding_id: findingId,
+          verification: null,
+          stage: 'BASELINE',
+          is_authoritative: false,
+          verified_annualized_savings_usd: 0,
+        });
+        return;
+      }
+
+      // Security check: ensure user owns this verification record
+      if (verification.user_id !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      res.json({
+        finding_id: findingId,
+        verification,
+        stage: verification.stage,
+        is_authoritative: verification.is_authoritative,
+        verified_annualized_savings_usd: verification.verified_annualized_savings_usd,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to retrieve verification.' });
+    }
+  });
+
+  // POST /api/findings/:id/verification/deploy
+  // Authoritatively transitions finding verification lifecycle to CUSTOMER_DEPLOYED
+  router.post('/findings/:id/verification/deploy', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      // Enforce finding ownership
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      // Auto-register finding ownership if not registered yet
+      if (!ownerId) {
+        await storage.registerFindingOwnership(findingId, user.id);
+      }
+
+      const { baseline, is_sample_data, deployment_timestamp } = req.body || {};
+      const now = new Date().toISOString();
+      const deployTime = deployment_timestamp && !isNaN(new Date(deployment_timestamp).getTime())
+        ? deployment_timestamp
+        : now;
+
+      const existing = await storage.getVerificationByFindingId(findingId);
+
+      const updatedRecord: AuthoritativeVerification = {
+        id: existing?.id || `ver_${crypto.randomUUID()}`,
+        finding_id: findingId,
+        user_id: user.id,
+        stage: 'CUSTOMER_DEPLOYED',
+        is_authoritative: false,
+        is_simulated: Boolean(is_sample_data || existing?.is_simulated),
+        baseline_start: baseline?.start || existing?.baseline_start || new Date(Date.now() - 7 * 86_400_000).toISOString(),
+        baseline_end: baseline?.end || existing?.baseline_end || now,
+        baseline_sample_count: Number(baseline?.sample_count ?? existing?.baseline_sample_count ?? 0),
+        baseline_avg_cost_usd: Number(baseline?.avg_cost_per_call_usd ?? existing?.baseline_avg_cost_usd ?? 0),
+        deployment_timestamp: deployTime,
+        observation_start: deployTime,
+        observation_end: deployTime,
+        observation_sample_count: 0,
+        post_avg_cost_usd: 0,
+        observed_reduction_pct: 0,
+        verified_annualized_savings_usd: 0,
+        verification_confidence: 'INSUFFICIENT_OBSERVATION',
+        verification_notes: 'Remediation deployed. Observation window open for post-deployment production telemetry.',
+        created_at: existing?.created_at || now,
+        updated_at: now,
+      };
+
+      await storage.saveVerification(updatedRecord);
+
+      res.json({
+        success: true,
+        finding_id: findingId,
+        stage: 'CUSTOMER_DEPLOYED',
+        is_authoritative: false,
+        verification: updatedRecord,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to record deployment.' });
+    }
+  });
+
+  // POST /api/findings/:id/verification/evaluate
+  // Evaluates telemetry against the canonical verification comparator server-side
+  // Ignores any client-supplied claims of authority or savings
+  router.post('/findings/:id/verification/evaluate', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      // Enforce finding ownership
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      if (!ownerId) {
+        await storage.registerFindingOwnership(findingId, user.id);
+      }
+
+      const { events, finding, file_name } = req.body || {};
+
+      if (!Array.isArray(events)) {
+        res.status(400).json({ error: 'INVALID_EVENTS', message: 'events array is required.' });
+        return;
+      }
+
+      if (!finding || typeof finding !== 'object' || finding.id !== findingId) {
+        res.status(400).json({ error: 'INVALID_FINDING', message: 'Valid finding payload matching finding_id is required.' });
+        return;
+      }
+
+      const existing = await storage.getVerificationByFindingId(findingId);
+      const now = new Date().toISOString();
+      const deployTime = existing?.deployment_timestamp || req.body.deployment_timestamp || now;
+      const obsStart = existing?.observation_start || deployTime;
+
+      // If client explicitly passed a closed observation window, honor it;
+      // otherwise maintain unclosed window (start === end) so comparator derives end from telemetry
+      const explicitWindow = req.body.observation_window;
+      const hasExplicitClosedWindow = Boolean(
+        explicitWindow?.start &&
+        explicitWindow?.end &&
+        explicitWindow.start !== explicitWindow.end
+      );
+
+      const observationWindow = hasExplicitClosedWindow
+        ? {
+            start: explicitWindow.start,
+            end: explicitWindow.end,
+            sample_event_count: 0,
+          }
+        : {
+            start: obsStart,
+            end: obsStart,
+            sample_event_count: 0,
+          };
+
+      // Construct currentState for canonical verification evaluation
+      const currentState: VerificationState = {
+        finding_id: findingId,
+        stage: existing?.stage || 'CUSTOMER_DEPLOYED',
+        baseline_window: {
+          start: existing?.baseline_start || finding.evidence?.baseline_period?.start || new Date(Date.now() - 7 * 86_400_000).toISOString(),
+          end: existing?.baseline_end || finding.evidence?.baseline_period?.end || now,
+          avg_cost_per_call_usd: existing?.baseline_avg_cost_usd || (finding.eligible_event_count > 0 ? finding.baseline_spend_usd / finding.eligible_event_count : 0),
+          sample_count: existing?.baseline_sample_count || finding.eligible_event_count || 0,
+        },
+        deployment_timestamp: deployTime,
+        observation_window: observationWindow,
+        is_simulated: Boolean(finding.is_sample_data || existing?.is_simulated),
+        post_deployment_file_name: file_name || existing?.post_deployment_file_name,
+      };
+
+      // RUN CANONICAL SERVER-SIDE VERIFICATION
+      // Client-supplied claims of is_authoritative, stage, or savings are strictly ignored!
+      const evaluated = evaluateVerification(currentState, finding, events, file_name);
+
+      const isAuth = isAuthoritativeVerified(evaluated);
+      const verifiedAnnualSavings = getAuthoritativeVerifiedSavings(evaluated);
+
+      const authRecord: AuthoritativeVerification = {
+        id: existing?.id || `ver_${crypto.randomUUID()}`,
+        finding_id: findingId,
+        user_id: user.id,
+        stage: evaluated.stage,
+        is_authoritative: isAuth,
+        is_simulated: Boolean(evaluated.is_simulated),
+        baseline_start: evaluated.baseline_window.start,
+        baseline_end: evaluated.baseline_window.end,
+        baseline_sample_count: evaluated.baseline_window.sample_count,
+        baseline_avg_cost_usd: evaluated.baseline_window.avg_cost_per_call_usd,
+        deployment_timestamp: evaluated.deployment_timestamp,
+        observation_start: evaluated.observation_window?.start,
+        observation_end: evaluated.observation_window?.end,
+        observation_sample_count: evaluated.observation_window?.sample_event_count || 0,
+        post_avg_cost_usd: evaluated.observed_result?.post_cost_per_call_usd || 0,
+        observed_reduction_pct: evaluated.observed_result?.observed_reduction_pct || 0,
+        verified_annualized_savings_usd: verifiedAnnualSavings,
+        verification_confidence: evaluated.observed_result?.verification_confidence || 'INSUFFICIENT_OBSERVATION',
+        verification_notes: evaluated.observed_result?.verification_notes,
+        post_deployment_file_name: evaluated.post_deployment_file_name,
+        verified_at: isAuth ? (existing?.verified_at || now) : undefined,
+        created_at: existing?.created_at || now,
+        updated_at: now,
+      };
+
+      await storage.saveVerification(authRecord);
+
+      res.json({
+        success: true,
+        finding_id: findingId,
+        stage: authRecord.stage,
+        is_authoritative: authRecord.is_authoritative,
+        is_simulated: authRecord.is_simulated,
+        verified_annualized_savings_usd: authRecord.verified_annualized_savings_usd,
+        verification: authRecord,
+        evaluated_state: evaluated,
+      });
+    } catch (err) {
+      console.error('[API] Verification evaluation error:', err);
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to evaluate verification telemetry.' });
     }
   });
 
