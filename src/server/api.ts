@@ -20,13 +20,15 @@ import {
   getLemonSqueezyConfig,
   verifyLemonSqueezySignature,
   createLemonSqueezyCheckout,
+  createLemonSqueezyOutcomeFeeCheckout,
 } from './lemon-squeezy';
-import { User, Entitlement, AuthoritativeVerification } from './types';
+import { User, Entitlement, AuthoritativeVerification, OutcomeFeeObligation, OutcomeFeeStatus } from './types';
 import {
   evaluateVerification,
   isAuthoritativeVerified,
   getAuthoritativeVerifiedSavings,
 } from '../engine/verification/comparator';
+import { calculateAuthoritativeVerificationFee } from '../engine/billing/outcome';
 import { Finding, AIEvent, VerificationState } from '../types/domain';
 
 export function createApiRouter(): Router {
@@ -578,6 +580,255 @@ export function createApiRouter(): Router {
   });
 
   // ==========================================
+  // OUTCOME FEE BILLING & CHECKOUT ENDPOINTS (Sprint B)
+  // ==========================================
+
+  // POST /api/findings/:id/outcome-fee
+  // Server-authoritatively calculates and creates or retrieves the unique OutcomeFeeObligation
+  router.post('/findings/:id/outcome-fee', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      // 1. Verify finding ownership
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+      if (!ownerId) {
+        await storage.registerFindingOwnership(findingId, user.id);
+      }
+
+      // Check if an obligation already exists for this finding (Idempotent replay)
+      const existing = await storage.getOutcomeFeeObligation(findingId);
+      if (existing) {
+        if (existing.user_id !== user.id) {
+          res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+          return;
+        }
+        res.status(200).json({
+          success: true,
+          obligation: existing,
+        });
+        return;
+      }
+
+      // 2. Load authoritative verification
+      const verification = await storage.getVerificationByFindingId(findingId);
+      if (!verification) {
+        res.status(400).json({
+          error: 'VERIFICATION_NOT_FOUND',
+          message: 'No verification record found for this finding.',
+        });
+        return;
+      }
+      if (verification.user_id !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      // 3. Enforce Authoritative Verification Gate (Invariants 1 & 2)
+      // Simulation, non-authoritative, or observation-only states are strictly rejected
+      if (
+        !verification.is_authoritative ||
+        verification.is_simulated ||
+        verification.stage !== 'VERIFIED_RESULT'
+      ) {
+        res.status(400).json({
+          error: 'VERIFICATION_NOT_AUTHORITATIVE',
+          message: verification.is_simulated
+            ? 'Simulation telemetry cannot establish commercial Outcome Fee obligations.'
+            : 'Finding must be authoritatively verified (VERIFIED_RESULT) before an Outcome Fee can be created.',
+        });
+        return;
+      }
+
+      // 4. Validate savings value
+      if (!verification.verified_annualized_savings_usd || verification.verified_annualized_savings_usd <= 0) {
+        res.status(400).json({
+          error: 'ZERO_VERIFIED_SAVINGS',
+          message: 'Authoritative verified annualized savings must be greater than $0.',
+        });
+        return;
+      }
+
+      // 5. Canonical Outcome Fee calculation (20% rule, 1-month cap, 50% protection clause)
+      const originalEstimate = typeof req.body?.original_estimated_annualized_usd === 'number'
+        ? req.body.original_estimated_annualized_usd
+        : (typeof req.body?.finding?.annualized_projection_usd === 'number'
+            ? req.body.finding.annualized_projection_usd
+            : undefined);
+
+      const feeCalc = calculateAuthoritativeVerificationFee(verification, originalEstimate);
+      if (feeCalc.protectionTriggered || !feeCalc.isPayable || feeCalc.finalOutcomeFeeUsd <= 0) {
+        res.status(400).json({
+          error: 'OUTCOME_FEE_NOT_PAYABLE',
+          message: feeCalc.protectionReason || 'Outcome fee is $0 or waived under commercial protection rules.',
+          calculation: feeCalc,
+        });
+        return;
+      }
+
+      // 6. Obligation creation & database uniqueness guarantee
+      const existingAfterCalc = await storage.getOutcomeFeeObligation(findingId);
+      if (existingAfterCalc) {
+        res.status(200).json({
+          success: true,
+          obligation: existingAfterCalc,
+          calculation: feeCalc,
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const obligation: OutcomeFeeObligation = {
+        id: `of_${crypto.randomUUID()}`,
+        user_id: user.id,
+        finding_id: findingId,
+        verification_id: verification.id,
+        verified_annualized_savings_usd: verification.verified_annualized_savings_usd,
+        fee_amount_usd: feeCalc.finalOutcomeFeeUsd,
+        currency: 'USD',
+        status: 'PAYABLE',
+        provider: 'LEMON_SQUEEZY',
+        created_at: now,
+        updated_at: now,
+      };
+
+      const saved = await storage.createOutcomeFeeObligation(obligation);
+      const statusCode = saved.id === obligation.id ? 201 : 200;
+      res.status(statusCode).json({
+        success: true,
+        obligation: saved,
+        calculation: feeCalc,
+      });
+    } catch (err) {
+      console.error('[API] Create Outcome Fee error:', err);
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to create Outcome Fee obligation.' });
+    }
+  });
+
+  // GET /api/findings/:id/outcome-fee
+  // Authoritative recovery path for Outcome Fee obligation state
+  router.get('/findings/:id/outcome-fee', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      const obligation = await storage.getOutcomeFeeObligation(findingId);
+      res.json({
+        finding_id: findingId,
+        obligation: obligation || null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to retrieve Outcome Fee obligation.' });
+    }
+  });
+
+  // POST /api/findings/:id/outcome-fee/checkout
+  // Initiates Lemon Squeezy checkout for an existing authoritative Outcome Fee obligation
+  router.post('/findings/:id/outcome-fee/checkout', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const findingId = req.params.id;
+      const user = req.user!;
+      const storage = getStorage();
+
+      const ownerId = await storage.getFindingOwner(findingId);
+      if (ownerId && ownerId !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
+
+      const obligation = await storage.getOutcomeFeeObligation(findingId);
+      if (!obligation) {
+        res.status(404).json({
+          error: 'OBLIGATION_NOT_FOUND',
+          message: 'No Outcome Fee obligation exists for this finding. Create obligation first.',
+        });
+        return;
+      }
+
+      if (obligation.status === 'PAID' || obligation.status === 'SETTLED') {
+        res.status(409).json({
+          error: 'ALREADY_PAID',
+          message: 'This Outcome Fee obligation has already been paid.',
+        });
+        return;
+      }
+
+      if (obligation.fee_amount_usd <= 0) {
+        res.status(400).json({
+          error: 'INVALID_FEE_AMOUNT',
+          message: 'Outcome Fee amount must be greater than $0.',
+        });
+        return;
+      }
+
+      const config = getLemonSqueezyConfig();
+      if (!config.apiKey || !config.storeId || !config.outcomeFeeVariantId) {
+        res.status(503).json({
+          error: 'BILLING_NOT_CONFIGURED',
+          message: 'Outcome Fee billing is not currently configured.',
+        });
+        return;
+      }
+
+      const checkoutRes = await createLemonSqueezyOutcomeFeeCheckout({
+        userId: user.id,
+        userEmail: user.email,
+        findingId,
+        obligationId: obligation.id,
+        verificationId: obligation.verification_id,
+        feeAmountUsd: obligation.fee_amount_usd,
+        redirectUrl: req.body?.redirect_url,
+      });
+
+      // Transition to CHECKOUT_CREATED on checkout creation success
+      const updatedObligation: OutcomeFeeObligation = {
+        ...obligation,
+        status: 'CHECKOUT_CREATED',
+        checkout_url: checkoutRes.checkoutUrl,
+        provider_order_id: checkoutRes.checkoutId || obligation.provider_order_id,
+        updated_at: new Date().toISOString(),
+      };
+      await storage.updateOutcomeFeeObligation(updatedObligation);
+
+      res.json({
+        success: true,
+        checkout_url: checkoutRes.checkoutUrl,
+        obligation: updatedObligation,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg === 'OUTCOME_FEE_BILLING_NOT_CONFIGURED' || msg === 'BILLING_NOT_CONFIGURED') {
+        res.status(503).json({
+          error: 'BILLING_NOT_CONFIGURED',
+          message: 'Outcome Fee checkout is not currently available.',
+        });
+        return;
+      }
+      if (msg === 'OUTCOME_FEE_CANNOT_USE_FIX_PACKAGE_VARIANT') {
+        res.status(500).json({
+          error: 'CONFIGURATION_ERROR',
+          message: 'Outcome Fee variant must not match Fix Package variant.',
+        });
+        return;
+      }
+      console.error('[API] Outcome Fee Checkout error:', err);
+      res.status(500).json({ error: 'CHECKOUT_FAILED', message: 'Unable to initiate Outcome Fee checkout session.' });
+    }
+  });
+
+  // ==========================================
   // WEBHOOK ENDPOINT
   // ==========================================
 
@@ -623,8 +874,8 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // We handle 'order_created' for payment capture
-      if (eventName === 'order_created') {
+      // We handle 'order_created' and 'order_settled' for payment capture & settlement
+      if (eventName === 'order_created' || eventName === 'order_settled') {
         const orderData = payload?.data;
         const attributes = orderData?.attributes;
         const customData = payload?.meta?.custom_data || attributes?.first_order_item?.custom;
@@ -635,128 +886,307 @@ export function createApiRouter(): Router {
         const orderId = String(orderData?.id || attributes?.identifier || eventId);
 
         // 3. Strict Product Identity Validation
-        // Must strictly equal 'FIX_PACKAGE'; reject missing, null, empty, wrong, or malformed
         const product = customData?.product;
-        if (typeof product !== 'string' || product.trim() !== 'FIX_PACKAGE') {
+        if (typeof product !== 'string' || (product.trim() !== 'FIX_PACKAGE' && product.trim() !== 'OUTCOME_FEE')) {
           storage.releaseWebhookClaim(eventId);
           res.status(400).json({
             error: 'INVALID_PRODUCT',
-            message: 'Webhook custom_data.product must be "FIX_PACKAGE".',
+            message: 'Webhook custom_data.product must be "FIX_PACKAGE" or "OUTCOME_FEE".',
           });
           return;
         }
 
-        // 4. Strict Variant Validation
-        // When variant ID is configured, incoming variant must be present and exactly match
-        if (config.variantId) {
+        // ==========================================
+        // BRANCH A: FIX PACKAGE PAYMENT
+        // ==========================================
+        if (product.trim() === 'FIX_PACKAGE') {
+          // If event is order_settled for Fix Package, record and ignore
+          if (eventName !== 'order_created') {
+            await storage.recordProcessedWebhook({
+              event_id: eventId,
+              provider: 'LEMON_SQUEEZY',
+              event_name: eventName,
+              processed_at: new Date().toISOString(),
+            });
+            res.status(200).json({ status: 'IGNORED_EVENT', event_name: eventName });
+            return;
+          }
+
+          // Strict Fix Package Variant Validation
+          if (config.variantId) {
+            const rawVariant = attributes?.first_order_item?.variant_id ?? attributes?.variant_id;
+            const incomingVariantId =
+              typeof rawVariant === 'string' || typeof rawVariant === 'number'
+                ? String(rawVariant).trim()
+                : '';
+            if (!incomingVariantId || incomingVariantId !== config.variantId) {
+              storage.releaseWebhookClaim(eventId);
+              res.status(400).json({
+                error: 'WRONG_VARIANT',
+                message: `Variant ID "${incomingVariantId}" does not match configured Fix Package variant.`,
+              });
+              return;
+            }
+          }
+
+          // Only paid status creates entitlement
+          if (orderStatus !== 'paid') {
+            await storage.recordProcessedWebhook({
+              event_id: eventId,
+              provider: 'LEMON_SQUEEZY',
+              event_name: eventName,
+              processed_at: new Date().toISOString(),
+            });
+            res.status(200).json({ status: 'IGNORED_NON_PAID', order_status: orderStatus });
+            return;
+          }
+
+          if (!userId || !findingId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(400).json({
+              error: 'MISSING_CUSTOM_DATA',
+              message: 'Webhook custom_data must contain user_id and finding_id.',
+            });
+            return;
+          }
+
+          const user = await storage.getUserById(userId);
+          if (!user) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
+            return;
+          }
+
+          const ownerId = await storage.getFindingOwner(findingId);
+          if (!ownerId || ownerId !== userId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(403).json({
+              error: 'FINDING_OWNERSHIP_MISMATCH',
+              message: 'Finding is not registered to the paying user.',
+            });
+            return;
+          }
+
+          const now = new Date().toISOString();
+          const entitlement: Entitlement = {
+            id: `ent_${crypto.randomUUID()}`,
+            user_id: userId,
+            finding_id: findingId,
+            type: 'PAID_FIX_PACKAGE',
+            status: 'ACTIVE',
+            provider: 'LEMON_SQUEEZY',
+            provider_transaction_id: orderId,
+            amount_usd: 49.0,
+            created_at: now,
+            updated_at: now,
+          };
+
+          const eventData = {
+            event_id: eventId,
+            provider: 'LEMON_SQUEEZY' as const,
+            event_name: eventName,
+            user_id: userId,
+            finding_id: findingId,
+            order_id: orderId,
+            processed_at: now,
+          };
+
+          let outcomeStatus: 'SUCCESS' | 'DUPLICATE' = 'SUCCESS';
+          if (typeof storage.processOrderCreatedWebhookTransaction === 'function') {
+            const txRes = await storage.processOrderCreatedWebhookTransaction({
+              event: eventData,
+              entitlement,
+            });
+            outcomeStatus = txRes.status;
+          } else {
+            await storage.createEntitlement(entitlement);
+            await storage.recordProcessedWebhook(eventData);
+          }
+
+          if (outcomeStatus === 'DUPLICATE') {
+            res.status(200).json({
+              status: 'IDEMPOTENT_DUPLICATE',
+              message: 'Event has already been processed or is currently being processed.',
+            });
+            return;
+          }
+
+          res.status(200).json({
+            status: 'SUCCESS',
+            entitlement_id: entitlement.id,
+            finding_id: entitlement.finding_id,
+          });
+          return;
+        }
+
+        // ==========================================
+        // BRANCH B: OUTCOME FEE PAYMENT (Sprint B)
+        // ==========================================
+        if (product.trim() === 'OUTCOME_FEE') {
+          // 4. Strict Variant Validation
           const rawVariant = attributes?.first_order_item?.variant_id ?? attributes?.variant_id;
           const incomingVariantId =
             typeof rawVariant === 'string' || typeof rawVariant === 'number'
               ? String(rawVariant).trim()
               : '';
-          if (!incomingVariantId || incomingVariantId !== config.variantId) {
+
+          // Must NOT use Fix Package variant (Section 22 & Invariant 7)
+          if (config.variantId && incomingVariantId === config.variantId) {
             storage.releaseWebhookClaim(eventId);
             res.status(400).json({
               error: 'WRONG_VARIANT',
-              message: `Variant ID "${incomingVariantId}" does not match configured Fix Package variant.`,
+              message: 'Outcome Fee cannot use Fix Package variant.',
             });
             return;
           }
-        }
 
-        // Only paid status creates entitlement
-        if (orderStatus !== 'paid') {
-          await storage.recordProcessedWebhook({
+          // If Outcome Fee variant configured, must match
+          if (config.outcomeFeeVariantId && incomingVariantId !== config.outcomeFeeVariantId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(400).json({
+              error: 'WRONG_VARIANT',
+              message: `Variant ID "${incomingVariantId}" does not match configured Outcome Fee variant.`,
+            });
+            return;
+          }
+
+          if (!userId || !findingId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(400).json({
+              error: 'MISSING_CUSTOM_DATA',
+              message: 'Webhook custom_data must contain user_id and finding_id.',
+            });
+            return;
+          }
+
+          // Verify user exists
+          const user = await storage.getUserById(userId);
+          if (!user) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
+            return;
+          }
+
+          // Verify finding ownership
+          const ownerId = await storage.getFindingOwner(findingId);
+          if (!ownerId || ownerId !== userId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(403).json({
+              error: 'FINDING_OWNERSHIP_MISMATCH',
+              message: 'Finding is not registered to the paying user.',
+            });
+            return;
+          }
+
+          // Resolve obligation by obligation_id or finding_id
+          const obligationId = customData?.obligation_id;
+          let obligation: OutcomeFeeObligation | null = null;
+          if (obligationId) {
+            obligation = await storage.getOutcomeFeeObligationById(obligationId);
+          }
+          if (!obligation) {
+            obligation = await storage.getOutcomeFeeObligation(findingId);
+          }
+
+          if (!obligation) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(404).json({
+              error: 'OBLIGATION_NOT_FOUND',
+              message: 'No Outcome Fee obligation found for this finding.',
+            });
+            return;
+          }
+
+          // Obligation binding verification (Section 23 & Invariant 9)
+          if (obligation.user_id !== userId || obligation.finding_id !== findingId) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(400).json({
+              error: 'OBLIGATION_BINDING_MISMATCH',
+              message: 'Webhook payload does not match obligation binding.',
+            });
+            return;
+          }
+
+          // Amount integrity validation (Section 24 & Invariant 6)
+          const rawTotalCents = attributes?.total ?? (attributes?.first_order_item?.price ?? 0);
+          const orderTotalCents = Number(rawTotalCents);
+          const expectedCents = Math.round(obligation.fee_amount_usd * 100);
+          if (Math.abs(orderTotalCents - expectedCents) > 1) {
+            storage.releaseWebhookClaim(eventId);
+            res.status(400).json({
+              error: 'AMOUNT_MISMATCH',
+              message: `Reported webhook amount ($${(orderTotalCents / 100).toFixed(2)}) does not match persisted obligation fee ($${obligation.fee_amount_usd.toFixed(2)}).`,
+            });
+            return;
+          }
+
+          // Determine status transition
+          let newStatus: OutcomeFeeStatus = 'PAID';
+          if (eventName === 'order_settled' || orderStatus === 'settled') {
+            newStatus = 'SETTLED';
+          } else if (orderStatus === 'paid') {
+            newStatus = 'PAID';
+          } else if (orderStatus === 'failed' || orderStatus === 'refunded') {
+            newStatus = 'FAILED';
+          } else {
+            // Pending or non-terminal status; record processed and ignore
+            await storage.recordProcessedWebhook({
+              event_id: eventId,
+              provider: 'LEMON_SQUEEZY',
+              event_name: eventName,
+              processed_at: new Date().toISOString(),
+            });
+            res.status(200).json({ status: 'IGNORED_NON_PAID', order_status: orderStatus });
+            return;
+          }
+
+          const now = new Date().toISOString();
+          const updatedObligation: OutcomeFeeObligation = {
+            ...obligation,
+            status: newStatus,
+            provider_order_id: orderId,
+            provider_transaction_id: orderId,
+            paid_at: (newStatus === 'PAID' || newStatus === 'SETTLED') ? (obligation.paid_at || now) : obligation.paid_at,
+            updated_at: now,
+          };
+
+          const eventData = {
             event_id: eventId,
-            provider: 'LEMON_SQUEEZY',
+            provider: 'LEMON_SQUEEZY' as const,
             event_name: eventName,
-            processed_at: new Date().toISOString(),
-          });
-          res.status(200).json({ status: 'IGNORED_NON_PAID', order_status: orderStatus });
-          return;
-        }
+            user_id: userId,
+            finding_id: findingId,
+            order_id: orderId,
+            processed_at: now,
+          };
 
-        if (!userId || !findingId) {
-          storage.releaseWebhookClaim(eventId);
-          res.status(400).json({
-            error: 'MISSING_CUSTOM_DATA',
-            message: 'Webhook custom_data must contain user_id and finding_id.',
-          });
-          return;
-        }
+          let outcomeStatus: 'SUCCESS' | 'DUPLICATE' = 'SUCCESS';
+          if (typeof storage.processOutcomeFeeWebhookTransaction === 'function') {
+            const txRes = await storage.processOutcomeFeeWebhookTransaction({
+              event: eventData,
+              obligation: updatedObligation,
+            });
+            outcomeStatus = txRes.status;
+          } else {
+            await storage.updateOutcomeFeeObligation(updatedObligation);
+            await storage.recordProcessedWebhook(eventData);
+          }
 
-        // Verify user exists
-        const user = await storage.getUserById(userId);
-        if (!user) {
-          storage.releaseWebhookClaim(eventId);
-          res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
-          return;
-        }
+          if (outcomeStatus === 'DUPLICATE') {
+            res.status(200).json({
+              status: 'IDEMPOTENT_DUPLICATE',
+              message: 'Event has already been processed or is currently being processed.',
+            });
+            return;
+          }
 
-        // 5. Enforce finding ownership invariant:
-        // Finding must exist in storage AND have an authoritative owner AND owner === paying user
-        const ownerId = await storage.getFindingOwner(findingId);
-        if (!ownerId || ownerId !== userId) {
-          storage.releaseWebhookClaim(eventId);
-          res.status(403).json({
-            error: 'FINDING_OWNERSHIP_MISMATCH',
-            message: 'Finding is not registered to the paying user.',
-          });
-          return;
-        }
-
-        // Create authoritative finding-scoped entitlement
-        const now = new Date().toISOString();
-        const entitlement: Entitlement = {
-          id: `ent_${crypto.randomUUID()}`,
-          user_id: userId,
-          finding_id: findingId,
-          type: 'PAID_FIX_PACKAGE',
-          status: 'ACTIVE',
-          provider: 'LEMON_SQUEEZY',
-          provider_transaction_id: orderId,
-          amount_usd: 49.0,
-          created_at: now,
-          updated_at: now,
-        };
-
-        const eventData = {
-          event_id: eventId,
-          provider: 'LEMON_SQUEEZY' as const,
-          event_name: eventName,
-          user_id: userId,
-          finding_id: findingId,
-          order_id: orderId,
-          processed_at: now,
-        };
-
-        // Execute atomic commercial transaction
-        let outcomeStatus: 'SUCCESS' | 'DUPLICATE' = 'SUCCESS';
-        if (typeof storage.processOrderCreatedWebhookTransaction === 'function') {
-          const txRes = await storage.processOrderCreatedWebhookTransaction({
-            event: eventData,
-            entitlement,
-          });
-          outcomeStatus = txRes.status;
-        } else {
-          await storage.createEntitlement(entitlement);
-          await storage.recordProcessedWebhook(eventData);
-        }
-
-        if (outcomeStatus === 'DUPLICATE') {
           res.status(200).json({
-            status: 'IDEMPOTENT_DUPLICATE',
-            message: 'Event has already been processed or is currently being processed.',
+            status: 'SUCCESS',
+            obligation_id: updatedObligation.id,
+            outcome_fee_status: updatedObligation.status,
           });
           return;
         }
-
-        res.status(200).json({
-          status: 'SUCCESS',
-          entitlement_id: entitlement.id,
-          finding_id: entitlement.finding_id,
-        });
-        return;
       }
 
       // For other events, record as processed and return 200

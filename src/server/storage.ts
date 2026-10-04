@@ -238,6 +238,40 @@ export class ServerStorage implements IStorage {
     return this.data.verifications[findingId] || null;
   }
 
+  // --- Outcome Fee Obligation Operations ---
+  async createOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation> {
+    const existing = this.data.outcomeFeeObligations[obligation.finding_id];
+    if (existing) {
+      return existing;
+    }
+    this.data.outcomeFeeObligations[obligation.finding_id] = obligation;
+    this.data.outcomeFeeObligationsById[obligation.id] = obligation.finding_id;
+    this.flushToDisk();
+    return obligation;
+  }
+
+  async getOutcomeFeeObligation(findingId: string): Promise<OutcomeFeeObligation | null> {
+    return this.data.outcomeFeeObligations[findingId] || null;
+  }
+
+  async getOutcomeFeeObligationById(obligationId: string): Promise<OutcomeFeeObligation | null> {
+    const findingId = this.data.outcomeFeeObligationsById[obligationId];
+    if (!findingId) return null;
+    return this.data.outcomeFeeObligations[findingId] || null;
+  }
+
+  async updateOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation> {
+    this.data.outcomeFeeObligations[obligation.finding_id] = obligation;
+    this.data.outcomeFeeObligationsById[obligation.id] = obligation.finding_id;
+    this.flushToDisk();
+    return obligation;
+  }
+
+  async hasPaidOutcomeFee(userId: string, findingId: string): Promise<boolean> {
+    const ob = this.data.outcomeFeeObligations[findingId];
+    return Boolean(ob && ob.user_id === userId && (ob.status === 'PAID' || ob.status === 'SETTLED'));
+  }
+
   // --- Webhook Idempotency Operations ---
   async isWebhookEventProcessed(eventId: string): Promise<boolean> {
     return Boolean(this.data.processedWebhooks[eventId] || this.inFlightWebhooks.has(eventId));
@@ -281,6 +315,27 @@ export class ServerStorage implements IStorage {
     }
     const key = this.entitlementKey(params.entitlement.user_id, params.entitlement.finding_id);
     this.data.entitlements[key] = params.entitlement;
+    this.data.processedWebhooks[params.event.event_id] = params.event;
+    this.inFlightWebhooks.delete(params.event.event_id);
+    this.flushToDisk();
+    return { status: 'SUCCESS' };
+  }
+
+  async processOutcomeFeeWebhookTransaction(params: {
+    event: ProcessedWebhookEvent;
+    obligation: OutcomeFeeObligation;
+    entitlement?: Entitlement;
+  }): Promise<{ status: 'SUCCESS' | 'DUPLICATE' }> {
+    if (this.data.processedWebhooks[params.event.event_id]) {
+      this.inFlightWebhooks.delete(params.event.event_id);
+      return { status: 'DUPLICATE' };
+    }
+    this.data.outcomeFeeObligations[params.obligation.finding_id] = params.obligation;
+    this.data.outcomeFeeObligationsById[params.obligation.id] = params.obligation.finding_id;
+    if (params.entitlement) {
+      const key = this.entitlementKey(params.entitlement.user_id, params.entitlement.finding_id);
+      this.data.entitlements[key] = params.entitlement;
+    }
     this.data.processedWebhooks[params.event.event_id] = params.event;
     this.inFlightWebhooks.delete(params.event.event_id);
     this.flushToDisk();

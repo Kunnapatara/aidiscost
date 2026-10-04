@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AuthoritativeVerification, VerificationState } from '../types/domain';
+import { AuthoritativeVerification, VerificationState, OutcomeFeeObligation } from '../types/domain';
 
 export interface AuthUser {
   id: string;
@@ -199,6 +199,61 @@ export async function evaluateFindingVerification(
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+// --- Outcome Fee Client API (Sprint B) ---
+
+export async function fetchOutcomeFeeObligation(
+  findingId: string
+): Promise<OutcomeFeeObligation | null> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/outcome-fee`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.obligation || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function createOutcomeFeeObligation(
+  findingId: string,
+  finding?: any
+): Promise<{ obligation: OutcomeFeeObligation | null; error?: string }> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/outcome-fee`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ finding }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      return { obligation: null, error: json?.message || json?.error || 'Failed to create obligation.' };
+    }
+    return { obligation: json?.obligation || null };
+  } catch (err: any) {
+    return { obligation: null, error: err?.message || 'Network error.' };
+  }
+}
+
+export async function createOutcomeFeeCheckout(
+  findingId: string,
+  redirectUrl?: string
+): Promise<{ checkout_url?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(findingId)}/outcome-fee/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_url: redirectUrl }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      return { error: json?.message || json?.error || 'Checkout initiation failed.' };
+    }
+    return { checkout_url: json?.checkout_url };
+  } catch (err: any) {
+    return { error: err?.message || 'Network error.' };
   }
 }
 

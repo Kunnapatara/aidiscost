@@ -4,10 +4,10 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Finding, VerificationState, AIEvent, AuthoritativeVerification } from '../types/domain';
+import { Finding, VerificationState, AIEvent, AuthoritativeVerification, OutcomeFeeObligation } from '../types/domain';
 import { MetricTile } from '../components/MetricTile';
 import { ProvenanceBadge } from '../components/ProvenanceBadge';
-import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical, Upload, FileText } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck, Clock, FlaskConical, Upload, FileText, CreditCard, Loader2 } from 'lucide-react';
 import { calculateOutcomeFee, COMMERCIAL_PRICING } from '../engine/billing/outcome';
 import { IngestionPipeline } from '../engine/ingestion/pipeline';
 import { isCommerciallyVerified } from '../engine/verification/comparator';
@@ -16,9 +16,13 @@ interface VerifyViewProps {
   finding: Finding;
   verificationState: VerificationState;
   authoritativeVerification?: AuthoritativeVerification | null;
+  outcomeFeeObligation?: OutcomeFeeObligation | null;
   onDeploy: (findingId: string) => void;
   onIngestObservation: (findingId: string, count: number) => void;
   onIngestRealObservation?: (findingId: string, events: AIEvent[], fileName: string) => void;
+  onPayOutcomeFee?: (findingId: string) => Promise<void>;
+  isAuthenticated?: boolean;
+  onOpenAuth?: () => void;
   onBack: () => void;
 }
 
@@ -26,9 +30,13 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
   finding,
   verificationState,
   authoritativeVerification,
+  outcomeFeeObligation,
   onDeploy,
   onIngestObservation,
   onIngestRealObservation,
+  onPayOutcomeFee,
+  isAuthenticated,
+  onOpenAuth,
   onBack,
 }) => {
   const [postImportError, setPostImportError] = useState<string | null>(null);
@@ -36,6 +44,7 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
   const [isImporting, setIsImporting] = useState(false);
   const [postPasteContent, setPostPasteContent] = useState('');
   const [showPostPaste, setShowPostPaste] = useState(false);
+  const [isPayingFee, setIsPayingFee] = useState(false);
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
   const stage = verificationState.stage;
@@ -351,6 +360,102 @@ export const VerifyView: React.FC<VerifyViewProps> = ({
                     </span>
                   </div>
                 )}
+
+                {/* Server-Authoritative Commercial Payment Action (Sprint B) */}
+                {isVerified && outcome.isPayable && (() => {
+                  const obligationStatus = outcomeFeeObligation?.status;
+                  const feeAmountDisplay = outcomeFeeObligation && outcomeFeeObligation.fee_amount_usd > 0
+                    ? outcomeFeeObligation.fee_amount_usd
+                    : outcome.finalOutcomeFeeUsd;
+
+                  return (
+                    <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-900">Commercial Obligation:</span>
+                          {obligationStatus === 'PAID' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              Outcome Fee Paid (${feeAmountDisplay.toFixed(2)})
+                            </span>
+                          ) : obligationStatus === 'SETTLED' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-teal-100 text-teal-800 border border-teal-300">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                              Fee Settled
+                            </span>
+                          ) : obligationStatus === 'CHECKOUT_CREATED' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" />
+                              Awaiting Payment Confirmation
+                            </span>
+                          ) : obligationStatus === 'FAILED' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                              Payment Failed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-300">
+                              Payable (${feeAmountDisplay.toFixed(2)})
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {obligationStatus === 'PAID' || obligationStatus === 'SETTLED'
+                            ? 'Authoritative payment confirmed via Lemon Squeezy webhook. Obligation fully satisfied.'
+                            : obligationStatus === 'CHECKOUT_CREATED'
+                            ? 'Checkout session initiated. Complete payment on Lemon Squeezy to satisfy obligation.'
+                            : 'One-time Outcome Fee payment based strictly on server-authoritative verified savings.'}
+                        </p>
+                      </div>
+
+                      {obligationStatus === 'PAID' || obligationStatus === 'SETTLED' ? (
+                        <div className="flex items-center gap-2 text-xs font-bold text-emerald-700">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                          <span>Commercial Terms Met</span>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          id="btn-pay-outcome-fee"
+                          onClick={async () => {
+                            if (!isAuthenticated && onOpenAuth) {
+                              onOpenAuth();
+                              return;
+                            }
+                            if (onPayOutcomeFee) {
+                              setIsPayingFee(true);
+                              try {
+                                await onPayOutcomeFee(finding.id);
+                              } finally {
+                                setIsPayingFee(false);
+                              }
+                            }
+                          }}
+                          disabled={isPayingFee}
+                          className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors flex items-center gap-2 shadow-xs shrink-0 disabled:opacity-50"
+                        >
+                          {isPayingFee ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Processing...</span>
+                            </>
+                          ) : (
+                            <>
+                              <CreditCard className="w-4 h-4" />
+                              <span>
+                                {obligationStatus === 'CHECKOUT_CREATED'
+                                  ? 'Resume Checkout'
+                                  : obligationStatus === 'FAILED'
+                                  ? 'Retry Outcome Fee Payment'
+                                  : `Pay Outcome Fee ($${feeAmountDisplay.toFixed(2)})`}
+                              </span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-slate-100 flex items-start gap-1.5">
                   <span className="font-semibold text-slate-700 shrink-0">Truth Boundary:</span>

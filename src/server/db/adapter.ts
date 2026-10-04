@@ -8,7 +8,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { Client } from '@libsql/client';
 import * as schema from './schema';
 import { IStorage } from '../storage-interface';
-import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification } from '../types';
+import { User, UserSession, Entitlement, FindingOwnership, ProcessedWebhookEvent, AuthoritativeVerification, OutcomeFeeObligation, OutcomeFeeStatus } from '../types';
 
 export class DrizzleStorageAdapter implements IStorage {
   private db: LibSQLDatabase<typeof schema>;
@@ -29,6 +29,7 @@ export class DrizzleStorageAdapter implements IStorage {
   async clearAll(): Promise<void> {
     this.inFlightWebhooks.clear();
     this.processedWebhooksCache.clear();
+    await this.db.delete(schema.outcomeFeeObligations);
     await this.db.delete(schema.verifications);
     await this.db.delete(schema.webhookEvents);
     await this.db.delete(schema.entitlements);
@@ -362,6 +363,111 @@ export class DrizzleStorageAdapter implements IStorage {
     };
   }
 
+  // --- Outcome Fee Obligation Operations ---
+  private mapOutcomeFeeObligation(row: schema.OutcomeFeeObligationRow): OutcomeFeeObligation {
+    return {
+      id: row.id,
+      user_id: row.userId,
+      finding_id: row.findingId,
+      verification_id: row.verificationId,
+      verified_annualized_savings_usd: row.verifiedAnnualizedSavingsUsd,
+      fee_amount_usd: row.feeAmountUsd,
+      currency: row.currency,
+      status: row.status as OutcomeFeeStatus,
+      provider: row.provider as 'LEMON_SQUEEZY' | 'DEMO_ADAPTER',
+      checkout_url: row.checkoutUrl || undefined,
+      provider_order_id: row.providerOrderId || undefined,
+      provider_transaction_id: row.providerTransactionId || undefined,
+      paid_at: row.paidAt || undefined,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+    };
+  }
+
+  async createOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation> {
+    const existing = await this.getOutcomeFeeObligation(obligation.finding_id);
+    if (existing) {
+      return existing;
+    }
+
+    await this.db
+      .insert(schema.outcomeFeeObligations)
+      .values({
+        id: obligation.id,
+        userId: obligation.user_id,
+        findingId: obligation.finding_id,
+        verificationId: obligation.verification_id,
+        verifiedAnnualizedSavingsUsd: obligation.verified_annualized_savings_usd,
+        feeAmountUsd: obligation.fee_amount_usd,
+        currency: obligation.currency,
+        status: obligation.status,
+        provider: obligation.provider,
+        checkoutUrl: obligation.checkout_url || null,
+        providerOrderId: obligation.provider_order_id || null,
+        providerTransactionId: obligation.provider_transaction_id || null,
+        paidAt: obligation.paid_at || null,
+        createdAt: obligation.created_at,
+        updatedAt: obligation.updated_at,
+      })
+      .onConflictDoNothing();
+
+    const saved = await this.getOutcomeFeeObligation(obligation.finding_id);
+    return saved || obligation;
+  }
+
+  async getOutcomeFeeObligation(findingId: string): Promise<OutcomeFeeObligation | null> {
+    const rows = await this.db
+      .select()
+      .from(schema.outcomeFeeObligations)
+      .where(eq(schema.outcomeFeeObligations.findingId, findingId))
+      .limit(1);
+
+    if (!rows[0]) return null;
+    return this.mapOutcomeFeeObligation(rows[0]);
+  }
+
+  async getOutcomeFeeObligationById(obligationId: string): Promise<OutcomeFeeObligation | null> {
+    const rows = await this.db
+      .select()
+      .from(schema.outcomeFeeObligations)
+      .where(eq(schema.outcomeFeeObligations.id, obligationId))
+      .limit(1);
+
+    if (!rows[0]) return null;
+    return this.mapOutcomeFeeObligation(rows[0]);
+  }
+
+  async updateOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation> {
+    await this.db
+      .update(schema.outcomeFeeObligations)
+      .set({
+        status: obligation.status,
+        checkoutUrl: obligation.checkout_url || null,
+        providerOrderId: obligation.provider_order_id || null,
+        providerTransactionId: obligation.provider_transaction_id || null,
+        paidAt: obligation.paid_at || null,
+        updatedAt: obligation.updated_at,
+      })
+      .where(eq(schema.outcomeFeeObligations.id, obligation.id));
+
+    return obligation;
+  }
+
+  async hasPaidOutcomeFee(userId: string, findingId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ status: schema.outcomeFeeObligations.status })
+      .from(schema.outcomeFeeObligations)
+      .where(
+        and(
+          eq(schema.outcomeFeeObligations.userId, userId),
+          eq(schema.outcomeFeeObligations.findingId, findingId)
+        )
+      )
+      .limit(1);
+
+    return Boolean(rows[0] && (rows[0].status === 'PAID' || rows[0].status === 'SETTLED'));
+  }
+
   // --- Webhook Idempotency Operations ---
   async isWebhookEventProcessed(eventId: string): Promise<boolean> {
     if (this.processedWebhooksCache.has(eventId) || this.inFlightWebhooks.has(eventId)) {
@@ -509,6 +615,115 @@ export class DrizzleStorageAdapter implements IStorage {
 
       // If the event was NOT committed in the database, this is NOT a duplicate.
       // Cache must NOT be poisoned with uncommitted events.
+      this.processedWebhooksCache.delete(params.event.event_id);
+      throw err;
+    }
+  }
+
+  // --- Atomic Outcome Fee Webhook Transaction ---
+  async processOutcomeFeeWebhookTransaction(params: {
+    event: ProcessedWebhookEvent;
+    obligation: OutcomeFeeObligation;
+    entitlement?: Entitlement;
+  }): Promise<{ status: 'SUCCESS' | 'DUPLICATE' }> {
+    if (this.processedWebhooksCache.has(params.event.event_id)) {
+      this.inFlightWebhooks.delete(params.event.event_id);
+      return { status: 'DUPLICATE' };
+    }
+
+    try {
+      return await this.db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ eventId: schema.webhookEvents.eventId })
+          .from(schema.webhookEvents)
+          .where(eq(schema.webhookEvents.eventId, params.event.event_id))
+          .limit(1);
+
+        if (existing[0]) {
+          this.processedWebhooksCache.add(params.event.event_id);
+          this.inFlightWebhooks.delete(params.event.event_id);
+          return { status: 'DUPLICATE' };
+        }
+
+        await tx.insert(schema.webhookEvents).values({
+          eventId: params.event.event_id,
+          provider: params.event.provider,
+          eventName: params.event.event_name,
+          userId: params.event.user_id,
+          findingId: params.event.finding_id,
+          orderId: params.event.order_id,
+          processedAt: params.event.processed_at,
+        });
+
+        await tx
+          .update(schema.outcomeFeeObligations)
+          .set({
+            status: params.obligation.status,
+            providerOrderId: params.obligation.provider_order_id || null,
+            providerTransactionId: params.obligation.provider_transaction_id || null,
+            paidAt: params.obligation.paid_at || null,
+            updatedAt: params.obligation.updated_at,
+          })
+          .where(eq(schema.outcomeFeeObligations.id, params.obligation.id));
+
+        if (params.entitlement) {
+          await tx
+            .insert(schema.entitlements)
+            .values({
+              id: params.entitlement.id,
+              userId: params.entitlement.user_id,
+              findingId: params.entitlement.finding_id,
+              type: params.entitlement.type,
+              status: params.entitlement.status,
+              provider: params.entitlement.provider,
+              providerTransactionId: params.entitlement.provider_transaction_id,
+              amountUsd: params.entitlement.amount_usd,
+              createdAt: params.entitlement.created_at,
+              updatedAt: params.entitlement.updated_at,
+            })
+            .onConflictDoUpdate({
+              target: [schema.entitlements.userId, schema.entitlements.findingId],
+              set: {
+                status: params.entitlement.status,
+                provider: params.entitlement.provider,
+                providerTransactionId: params.entitlement.provider_transaction_id,
+                amountUsd: params.entitlement.amount_usd,
+                updatedAt: params.entitlement.updated_at,
+              },
+            });
+        }
+
+        this.processedWebhooksCache.add(params.event.event_id);
+        this.inFlightWebhooks.delete(params.event.event_id);
+        return { status: 'SUCCESS' };
+      });
+    } catch (err: any) {
+      this.inFlightWebhooks.delete(params.event.event_id);
+
+      const isLockCollision =
+        err?.code === 'SQLITE_BUSY' ||
+        String(err?.message || '').includes('locked') ||
+        String(err?.cause?.message || '').includes('locked');
+
+      if (isLockCollision) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+
+      try {
+        const committed = await this.db
+          .select({ eventId: schema.webhookEvents.eventId })
+          .from(schema.webhookEvents)
+          .where(eq(schema.webhookEvents.eventId, params.event.event_id))
+          .limit(1);
+
+        if (committed[0]) {
+          this.processedWebhooksCache.add(params.event.event_id);
+          return { status: 'DUPLICATE' };
+        }
+      } catch {
+        // Ignore fallback query failure
+      }
+
       this.processedWebhooksCache.delete(params.event.event_id);
       throw err;
     }

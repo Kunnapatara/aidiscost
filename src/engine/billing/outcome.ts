@@ -4,7 +4,7 @@
  */
 
 import { CommercialPricingConstants, OutcomeFeeCalculation, CommercialROIExample } from '../../types/commercial';
-import { Finding, VerificationState } from '../../types/domain';
+import { Finding, VerificationState, AuthoritativeVerification } from '../../types/domain';
 import { isAuthoritativeVerified, getAuthoritativeVerifiedSavings } from '../verification/comparator';
 
 export const COMMERCIAL_PRICING: CommercialPricingConstants = {
@@ -184,5 +184,47 @@ export function calculateAuthoritativeOutcomeFee(
   const verifiedMonthlySavings = verifiedAnnualSavings / 12;
 
   return calculateOutcomeFee(verifiedMonthlySavings, originalEstimate);
+}
+
+/**
+ * Server-authoritative Outcome Fee calculation directly from persisted AuthoritativeVerification record.
+ * Guarantees that unverified, simulated, or non-authoritative records cannot produce a commercial obligation.
+ */
+export function calculateAuthoritativeVerificationFee(
+  verification: AuthoritativeVerification,
+  originalEstimatedAnnualizedSavingsUsd?: number
+): OutcomeFeeCalculation {
+  const originalEstimateMonthly = (originalEstimatedAnnualizedSavingsUsd && Number.isFinite(originalEstimatedAnnualizedSavingsUsd) && originalEstimatedAnnualizedSavingsUsd > 0)
+    ? Number((originalEstimatedAnnualizedSavingsUsd / 12).toFixed(2))
+    : 0;
+
+  if (
+    !verification.is_authoritative ||
+    verification.is_simulated ||
+    verification.stage !== 'VERIFIED_RESULT' ||
+    !verification.verified_annualized_savings_usd ||
+    verification.verified_annualized_savings_usd <= 0
+  ) {
+    return {
+      verifiedMonthlyRunRateUsd: 0,
+      verifiedAnnualizedSavingsUsd: 0,
+      rawOutcomeFeeUsd: 0,
+      capAmountUsd: 0,
+      originalEstimatedMonthlySavingsUsd: originalEstimateMonthly,
+      realizedRatio: 0,
+      protectionTriggered: false,
+      protectionReason: verification.is_simulated
+        ? 'Telemetric evaluation was simulated (demo). Authoritative commercial billing requires genuine production verification.'
+        : 'Finding has not reached an authoritative VERIFIED_RESULT stage.',
+      finalOutcomeFeeUsd: 0,
+      isPayable: false,
+      methodologyDescription: 'Non-authoritative or unverified telemetry. No outcome fee is payable.',
+    };
+  }
+
+  const verifiedAnnualSavings = verification.verified_annualized_savings_usd;
+  const verifiedMonthlySavings = verifiedAnnualSavings / 12;
+
+  return calculateOutcomeFee(verifiedMonthlySavings, originalEstimateMonthly);
 }
 

@@ -13,6 +13,7 @@ import {
   TelemetrySource,
   VerificationState,
   AuthoritativeVerification,
+  OutcomeFeeObligation,
 } from './types/domain';
 import { LangfuseAdapter } from './engine/adapters/langfuse';
 import { HeliconeAdapter } from './engine/adapters/helicone';
@@ -33,6 +34,9 @@ import {
   getFindingVerification,
   recordFindingDeployment,
   evaluateFindingVerification,
+  fetchOutcomeFeeObligation,
+  createOutcomeFeeObligation,
+  createOutcomeFeeCheckout,
 } from './services/api';
 import { HeaderNav } from './components/HeaderNav';
 import { LandingView } from './views/LandingView';
@@ -61,6 +65,7 @@ export default function App() {
   const [fixPackages, setFixPackages] = useState<Map<string, FixPackage>>(new Map());
   const [verificationStates, setVerificationStates] = useState<Map<string, VerificationState>>(new Map());
   const [serverVerifications, setServerVerifications] = useState<Map<string, AuthoritativeVerification>>(new Map());
+  const [outcomeFeeObligations, setOutcomeFeeObligations] = useState<Map<string, OutcomeFeeObligation>>(new Map());
 
   // Supporting States
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
@@ -368,6 +373,13 @@ export default function App() {
               return next;
             });
           });
+
+          // Also hydrate authoritative Outcome Fee obligation state
+          fetchOutcomeFeeObligation(findingId).then((ob) => {
+            if (ob) {
+              setOutcomeFeeObligations((prev) => new Map(prev).set(findingId, ob));
+            }
+          }).catch(() => {});
         }
       }
     }
@@ -545,6 +557,60 @@ export default function App() {
       findingId,
       isPaid: status === 'PAID_UNLOCKED',
     });
+  };
+
+  // Handle Commercial Outcome Fee Payment Initiation (Sprint B)
+  const handlePayOutcomeFee = async (findingId: string) => {
+    if (!isAuthenticated) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    const fnd = auditSummary?.findings.find((f) => f.id === findingId);
+    if (!fnd) return;
+
+    // 1. Ensure obligation exists on server
+    let obligation = outcomeFeeObligations.get(findingId);
+    if (!obligation) {
+      const res = await createOutcomeFeeObligation(findingId, fnd);
+      if (res.error || !res.obligation) {
+        setErrorState({
+          isError: true,
+          category: 'BILLING_ERROR',
+          message: res.error || 'Failed to create Outcome Fee obligation.',
+        });
+        return;
+      }
+      obligation = res.obligation;
+      setOutcomeFeeObligations((prev) => new Map(prev).set(findingId, obligation!));
+    }
+
+    // 2. Initiate Lemon Squeezy checkout session
+    const currentHash = window.location.hash || `#/verify/${findingId}`;
+    const redirectUrl = `${window.location.origin}/${currentHash}`;
+    const checkoutRes = await createOutcomeFeeCheckout(findingId, redirectUrl);
+
+    if (checkoutRes.error || !checkoutRes.checkout_url) {
+      setErrorState({
+        isError: true,
+        category: 'BILLING_ERROR',
+        message: checkoutRes.error || 'Failed to initiate Outcome Fee checkout.',
+      });
+      return;
+    }
+
+    // 3. Update obligation state to CHECKOUT_CREATED
+    setOutcomeFeeObligations((prev) => {
+      const updated = new Map(prev);
+      const curr = updated.get(findingId);
+      if (curr) {
+        updated.set(findingId, { ...curr, status: 'CHECKOUT_CREATED', checkout_url: checkoutRes.checkout_url });
+      }
+      return updated;
+    });
+
+    // 4. Redirect to Lemon Squeezy checkout
+    window.location.href = checkoutRes.checkout_url;
   };
 
   // Handle Verification Deployment Mark
@@ -889,9 +955,13 @@ export default function App() {
                 finding={activeFinding}
                 verificationState={activeVerificationState}
                 authoritativeVerification={serverVerifications.get(activeFinding.id) || null}
+                outcomeFeeObligation={outcomeFeeObligations.get(activeFinding.id) || null}
                 onDeploy={handleMarkDeployed}
                 onIngestObservation={handleSimulatePostObservation}
                 onIngestRealObservation={handleIngestRealObservation}
+                onPayOutcomeFee={handlePayOutcomeFee}
+                isAuthenticated={isAuthenticated}
+                onOpenAuth={() => setShowAuthModal(true)}
                 onBack={() => navigateTo(`/finding/${activeFinding.id}`)}
               />
             )}

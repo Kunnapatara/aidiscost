@@ -30,12 +30,12 @@ export interface IStorage {
   saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification>;
   getVerificationByFindingId(findingId: string): Promise<AuthoritativeVerification | null>;
 
-  // --- Outcome Fee Obligation Operations (Sprint B Preparation) ---
-  createOutcomeFeeObligation?(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
-  getOutcomeFeeObligation?(findingId: string): Promise<OutcomeFeeObligation | null>;
-  getOutcomeFeeObligationById?(obligationId: string): Promise<OutcomeFeeObligation | null>;
-  updateOutcomeFeeObligation?(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
-  hasPaidOutcomeFee?(userId: string, findingId: string): Promise<boolean>;
+  // --- Outcome Fee Obligation Operations ---
+  createOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
+  getOutcomeFeeObligation(findingId: string): Promise<OutcomeFeeObligation | null>;
+  getOutcomeFeeObligationById(obligationId: string): Promise<OutcomeFeeObligation | null>;
+  updateOutcomeFeeObligation(obligation: OutcomeFeeObligation): Promise<OutcomeFeeObligation>;
+  hasPaidOutcomeFee(userId: string, findingId: string): Promise<boolean>;
 
   // --- Webhook Idempotency Operations ---
   isWebhookEventProcessed(eventId: string): Promise<boolean>;
