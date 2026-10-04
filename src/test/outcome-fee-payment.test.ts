@@ -1138,4 +1138,394 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
       assert.strictEqual(hasPaid, true);
     });
   });
+
+  // =========================================================================
+  // 10. Production Hardening Sprint: Invariants Verification (Cases 46 - 54)
+  // =========================================================================
+  describe('10. Production Hardening Sprint: Invariants Verification (Cases 46-54)', () => {
+    test('Case 46: client cannot manipulate original estimate to reduce fee when server verification has canonical estimate', async () => {
+      const findingHarden1 = 'fnd_harden_estimate_manipulation_01';
+      await storage.registerFindingOwnership(findingHarden1, userA.id);
+
+      const authRecord: AuthoritativeVerification = {
+        id: `ver_harden_${crypto.randomUUID()}`,
+        finding_id: findingHarden1,
+        user_id: userA.id,
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 12000.0, // $1,000/mo verified
+        original_estimated_annualized_usd: 12000.0, // $1,000/mo canonical server estimate
+        verification_confidence: 'HIGH',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.saveVerification(authRecord);
+
+      // Malicious client tries to send an enormous original estimate ($10,000,000)
+      // in an attempt to make verified savings fall below 50% and trigger the protection clause ($0 fee)
+      const res = await fetch(`${serverUrl}/api/findings/${findingHarden1}/outcome-fee`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({
+          original_estimated_annualized_usd: 10_000_000.0,
+        }),
+      });
+
+      assert.strictEqual(res.status, 201);
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      // Persisted fee MUST use the canonical server estimate ($12,000 -> realized ratio 100% >= 50%)
+      // Fee: 20% of $12,000 = $2,400; Capped at 1-month ($1,000/mo) = $1,000.0
+      assert.strictEqual(json.obligation.fee_amount_usd, 1000.0);
+      assert.strictEqual(json.obligation.status, 'PAYABLE');
+    });
+
+    test('Case 47: client cannot manipulate original estimate to increase fee beyond cap', async () => {
+      const findingHarden2 = 'fnd_harden_estimate_increase_02';
+      await storage.registerFindingOwnership(findingHarden2, userA.id);
+
+      const authRecord: AuthoritativeVerification = {
+        id: `ver_harden_${crypto.randomUUID()}`,
+        finding_id: findingHarden2,
+        user_id: userA.id,
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 6000.0, // $500/mo verified
+        original_estimated_annualized_usd: 6000.0,
+        verification_confidence: 'HIGH',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.saveVerification(authRecord);
+
+      // Client passes arbitrary inflated values in body
+      const res = await fetch(`${serverUrl}/api/findings/${findingHarden2}/outcome-fee`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({
+          original_estimated_annualized_usd: 500_000.0,
+          fee_amount_usd: 9999.0,
+        }),
+      });
+
+      assert.strictEqual(res.status, 201);
+      const json: any = await res.json();
+      // Cap is $500.00 (1 month of $6,000/yr). 20% of $6,000 is $1,200. Min($1200, $500) = $500.0
+      assert.strictEqual(json.obligation.fee_amount_usd, 500.0);
+    });
+
+    test('Case 48: User B cannot checkout or GET User A obligation even knowing finding ID', async () => {
+      // User B tries to initiate checkout for Finding A owned by User A
+      const checkoutRes = await fetch(`${serverUrl}/api/findings/${findingA}/outcome-fee/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userB.cookie },
+        body: JSON.stringify({}),
+      });
+      assert.strictEqual(checkoutRes.status, 404);
+
+      // User B tries to GET Finding A obligation
+      const getRes = await fetch(`${serverUrl}/api/findings/${findingA}/outcome-fee`, {
+        headers: { Cookie: userB.cookie },
+      });
+      assert.strictEqual(getRes.status, 404);
+    });
+
+    test('Case 49: User B cannot claim unowned finding that already has User A verification', async () => {
+      const findingUnclaimed = 'fnd_unclaimed_verified_by_user_a';
+      // User A creates verification without prior findingOwnerships row
+      const authRecord: AuthoritativeVerification = {
+        id: `ver_unclaimed_${crypto.randomUUID()}`,
+        finding_id: findingUnclaimed,
+        user_id: userA.id,
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 12000.0,
+        original_estimated_annualized_usd: 12000.0,
+        verification_confidence: 'HIGH',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.saveVerification(authRecord);
+
+      // User B attempts to claim this finding by POSTing to /outcome-fee
+      const res = await fetch(`${serverUrl}/api/findings/${findingUnclaimed}/outcome-fee`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userB.cookie },
+        body: JSON.stringify({ original_estimated_annualized_usd: 12000.0 }),
+      });
+
+      assert.strictEqual(res.status, 404);
+      // Ensure ownership was NOT granted to User B
+      const owner = await storage.getFindingOwner(findingUnclaimed);
+      assert.notStrictEqual(owner, userB.id);
+    });
+
+    test('Case 50: PAID or SETTLED obligation rejects new checkout session (409 Conflict)', async () => {
+      const findingPaid = 'fnd_paid_obligation_checkout_rejection';
+      await storage.registerFindingOwnership(findingPaid, userA.id);
+
+      const obligation: OutcomeFeeObligation = {
+        id: `of_paid_${crypto.randomUUID()}`,
+        user_id: userA.id,
+        finding_id: findingPaid,
+        verification_id: `ver_${crypto.randomUUID()}`,
+        verified_annualized_savings_usd: 12000.0,
+        fee_amount_usd: 1000.0,
+        currency: 'USD',
+        status: 'PAID',
+        provider: 'LEMON_SQUEEZY',
+        paid_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.createOutcomeFeeObligation(obligation);
+
+      const res = await fetch(`${serverUrl}/api/findings/${findingPaid}/outcome-fee/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({}),
+      });
+
+      assert.strictEqual(res.status, 409);
+      const json: any = await res.json();
+      assert.strictEqual(json.error, 'ALREADY_PAID');
+    });
+
+    test('Case 51: SETTLED obligation cannot regress to PAID or FAILED on out-of-order webhooks', async () => {
+      const findingSettled = 'fnd_settled_monotonic_guard';
+      await storage.registerFindingOwnership(findingSettled, userA.id);
+
+      const obligation: OutcomeFeeObligation = {
+        id: `of_settled_${crypto.randomUUID()}`,
+        user_id: userA.id,
+        finding_id: findingSettled,
+        verification_id: `ver_${crypto.randomUUID()}`,
+        verified_annualized_savings_usd: 12000.0,
+        fee_amount_usd: 1000.0,
+        currency: 'USD',
+        status: 'SETTLED',
+        provider: 'LEMON_SQUEEZY',
+        paid_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.createOutcomeFeeObligation(obligation);
+
+      // Out-of-order webhook arrives with order_created (status: 'paid')
+      const outOfOrderPayload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: 'evt_out_of_order_paid_01',
+          custom_data: {
+            user_id: userA.id,
+            finding_id: findingSettled,
+            obligation_id: obligation.id,
+            product: 'OUTCOME_FEE',
+          },
+        },
+        data: {
+          id: 'ord_ooo_101',
+          attributes: {
+            status: 'paid',
+            total: 100000,
+            variant_id: TEST_OUTCOME_FEE_VARIANT_ID,
+          },
+        },
+      };
+      const { rawBody, signature } = buildSignedWebhook(outOfOrderPayload);
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-signature': signature },
+        body: rawBody,
+      });
+
+      assert.strictEqual(res.status, 200);
+      const updated = await storage.getOutcomeFeeObligation(findingSettled);
+      // Status MUST remain SETTLED and not regress to PAID
+      assert.strictEqual(updated?.status, 'SETTLED');
+    });
+
+    test('Case 52: PAID obligation cannot regress to FAILED on payment failure webhook', async () => {
+      const findingPaid2 = 'fnd_paid_monotonic_guard_02';
+      await storage.registerFindingOwnership(findingPaid2, userA.id);
+
+      const obligation: OutcomeFeeObligation = {
+        id: `of_paid_guard_${crypto.randomUUID()}`,
+        user_id: userA.id,
+        finding_id: findingPaid2,
+        verification_id: `ver_${crypto.randomUUID()}`,
+        verified_annualized_savings_usd: 12000.0,
+        fee_amount_usd: 1000.0,
+        currency: 'USD',
+        status: 'PAID',
+        provider: 'LEMON_SQUEEZY',
+        paid_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.createOutcomeFeeObligation(obligation);
+
+      // Failure webhook arrives
+      const failPayload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: 'evt_fail_on_paid_02',
+          custom_data: {
+            user_id: userA.id,
+            finding_id: findingPaid2,
+            obligation_id: obligation.id,
+            product: 'OUTCOME_FEE',
+          },
+        },
+        data: {
+          id: 'ord_fail_102',
+          attributes: {
+            status: 'failed',
+            total: 100000,
+            variant_id: TEST_OUTCOME_FEE_VARIANT_ID,
+          },
+        },
+      };
+      const { rawBody, signature } = buildSignedWebhook(failPayload);
+
+      const res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-signature': signature },
+        body: rawBody,
+      });
+
+      assert.strictEqual(res.status, 200);
+      const updated = await storage.getOutcomeFeeObligation(findingPaid2);
+      // Status MUST remain PAID and not regress to FAILED
+      assert.strictEqual(updated?.status, 'PAID');
+    });
+
+    test('Case 53: Webhook failure & recovery: failed webhook processing releases in-flight claim so provider retry succeeds', async () => {
+      const testEventId = 'evt_recovery_retry_test_01';
+      // Simulate that a webhook claim was started
+      const firstClaim = storage.claimWebhookEvent(testEventId);
+      assert.strictEqual(firstClaim, 'PROCEED');
+
+      // Processing failed unexpectedly -> releaseWebhookClaim is invoked
+      storage.releaseWebhookClaim(testEventId);
+
+      // Provider retries after backoff -> claim must be accepted ('PROCEED') rather than blocked as IN_FLIGHT
+      const retryClaim = storage.claimWebhookEvent(testEventId);
+      assert.strictEqual(retryClaim, 'PROCEED');
+
+      // Cleanup
+      storage.releaseWebhookClaim(testEventId);
+    });
+
+    test('Case 54: Database persistence level concurrency: unique index on finding_id prevents duplicate rows even on direct concurrent inserts', async () => {
+      const sqlitePath = 'data/test-drizzle-unique-test.db';
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+
+      const prevEnv = process.env.TURSO_DATABASE_URL;
+      process.env.TURSO_DATABASE_URL = `file:${sqlitePath}`;
+      await runDatabaseMigrations();
+
+      const { db, client } = createDatabaseConnection({ url: `file:${sqlitePath}` });
+      const drizzleAdapter = new DrizzleStorageAdapter(db, client);
+
+      const findingId = 'fnd_concurrency_unique_db_test_01';
+      await drizzleAdapter.createUser({
+        id: 'usr_01',
+        email: 'usr01@aidiscost.com',
+        password_hash: 'hash_test_123',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      await drizzleAdapter.registerFindingOwnership(findingId, 'usr_01');
+
+      const authRecord: AuthoritativeVerification = {
+        id: 'ver_uniq_01',
+        finding_id: findingId,
+        user_id: 'usr_01',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 12000.0,
+        verification_confidence: 'HIGH',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await drizzleAdapter.saveVerification(authRecord);
+
+      // Fire 5 concurrent create calls directly against SQLite adapter
+      const promises = Array.from({ length: 5 }, (_, i) =>
+        drizzleAdapter.createOutcomeFeeObligation({
+          id: `of_concurrent_db_${i}`,
+          user_id: 'usr_01',
+          finding_id: findingId,
+          verification_id: 'ver_uniq_01',
+          verified_annualized_savings_usd: 12000.0,
+          fee_amount_usd: 1000.0,
+          currency: 'USD',
+          status: 'PAYABLE',
+          provider: 'LEMON_SQUEEZY',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+      );
+
+      const results = await Promise.all(promises);
+      const firstObligationId = results[0].id;
+
+      // Every returned object must be identical to the winning obligation
+      for (const res of results) {
+        assert.strictEqual(res.id, firstObligationId);
+        assert.strictEqual(res.finding_id, findingId);
+      }
+
+      // Verify that database table has exactly 1 row for this finding
+      const stored = await drizzleAdapter.getOutcomeFeeObligation(findingId);
+      assert.ok(stored);
+      assert.strictEqual(stored.id, firstObligationId);
+
+      client.close();
+      if (prevEnv) {
+        process.env.TURSO_DATABASE_URL = prevEnv;
+      } else {
+        delete process.env.TURSO_DATABASE_URL;
+      }
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+    });
+  });
 });

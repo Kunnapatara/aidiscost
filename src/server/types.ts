@@ -100,6 +100,7 @@ export interface AuthoritativeVerification {
   post_avg_cost_usd: number;
   observed_reduction_pct: number;
   verified_annualized_savings_usd: number;
+  original_estimated_annualized_usd?: number;
   verification_confidence: 'HIGH' | 'MEDIUM' | 'INSUFFICIENT_OBSERVATION';
   verification_notes?: string;
   post_deployment_file_name?: string;

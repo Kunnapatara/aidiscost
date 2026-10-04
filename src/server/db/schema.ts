@@ -104,7 +104,7 @@ export const outcomeFeeObligations = sqliteTable('outcome_fee_obligations', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_outcome_fee_user_finding').on(table.userId, table.findingId),
-  index('idx_outcome_fee_finding_id').on(table.findingId),
+  uniqueIndex('idx_outcome_fee_finding_id').on(table.findingId),
   index('idx_outcome_fee_user_id').on(table.userId),
 ]);
 

@@ -476,6 +476,9 @@ export function createApiRouter(): Router {
         post_avg_cost_usd: evaluated.observed_result?.post_cost_per_call_usd || 0,
         observed_reduction_pct: evaluated.observed_result?.observed_reduction_pct || 0,
         verified_annualized_savings_usd: verifiedAnnualSavings,
+        original_estimated_annualized_usd: typeof finding?.annualized_projection_usd === 'number' && Number.isFinite(finding.annualized_projection_usd) && finding.annualized_projection_usd > 0
+          ? finding.annualized_projection_usd
+          : existing?.original_estimated_annualized_usd,
         verification_confidence: evaluated.observed_result?.verification_confidence || 'INSUFFICIENT_OBSERVATION',
         verification_notes: evaluated.observed_result?.verification_notes,
         post_deployment_file_name: evaluated.post_deployment_file_name,
@@ -597,14 +600,18 @@ export function createApiRouter(): Router {
         res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
         return;
       }
-      if (!ownerId) {
-        await storage.registerFindingOwnership(findingId, user.id);
+
+      // Enforce cross-user barrier on existing verification
+      const verification = await storage.getVerificationByFindingId(findingId);
+      if (verification && verification.user_id !== user.id) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
       }
 
       // Check if an obligation already exists for this finding (Idempotent replay)
       const existing = await storage.getOutcomeFeeObligation(findingId);
       if (existing) {
-        if (existing.user_id !== user.id) {
+        if (existing.user_id !== user.id || existing.finding_id !== findingId) {
           res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
           return;
         }
@@ -615,8 +622,11 @@ export function createApiRouter(): Router {
         return;
       }
 
+      if (!ownerId) {
+        await storage.registerFindingOwnership(findingId, user.id);
+      }
+
       // 2. Load authoritative verification
-      const verification = await storage.getVerificationByFindingId(findingId);
       if (!verification) {
         res.status(400).json({
           error: 'VERIFICATION_NOT_FOUND',
@@ -655,11 +665,15 @@ export function createApiRouter(): Router {
       }
 
       // 5. Canonical Outcome Fee calculation (20% rule, 1-month cap, 50% protection clause)
-      const originalEstimate = typeof req.body?.original_estimated_annualized_usd === 'number'
-        ? req.body.original_estimated_annualized_usd
-        : (typeof req.body?.finding?.annualized_projection_usd === 'number'
-            ? req.body.finding.annualized_projection_usd
-            : undefined);
+      // Server-authoritative original estimate from persisted verification has absolute precedence.
+      // Client-provided values can never override or manipulate a persisted canonical estimate.
+      const originalEstimate = (typeof verification.original_estimated_annualized_usd === 'number' && Number.isFinite(verification.original_estimated_annualized_usd) && verification.original_estimated_annualized_usd > 0)
+        ? verification.original_estimated_annualized_usd
+        : (typeof req.body?.original_estimated_annualized_usd === 'number'
+            ? req.body.original_estimated_annualized_usd
+            : (typeof req.body?.finding?.annualized_projection_usd === 'number'
+                ? req.body.finding.annualized_projection_usd
+                : undefined));
 
       const feeCalc = calculateAuthoritativeVerificationFee(verification, originalEstimate);
       if (feeCalc.protectionTriggered || !feeCalc.isPayable || feeCalc.finalOutcomeFeeUsd <= 0) {
@@ -725,6 +739,10 @@ export function createApiRouter(): Router {
       }
 
       const obligation = await storage.getOutcomeFeeObligation(findingId);
+      if (obligation && (obligation.user_id !== user.id || obligation.finding_id !== findingId)) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
+        return;
+      }
       res.json({
         finding_id: findingId,
         obligation: obligation || null,
@@ -754,6 +772,11 @@ export function createApiRouter(): Router {
           error: 'OBLIGATION_NOT_FOUND',
           message: 'No Outcome Fee obligation exists for this finding. Create obligation first.',
         });
+        return;
+      }
+
+      if (obligation.user_id !== user.id || obligation.finding_id !== findingId) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found.' });
         return;
       }
 
@@ -834,6 +857,7 @@ export function createApiRouter(): Router {
 
   // POST /api/webhooks/lemon-squeezy
   router.post('/webhooks/lemon-squeezy', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    let currentEventId: string | undefined;
     try {
       const config = getLemonSqueezyConfig();
       const secret = config.webhookSecret;
@@ -856,6 +880,7 @@ export function createApiRouter(): Router {
       const payload = typeof req.body === 'object' ? req.body : JSON.parse(rawBody.toString('utf-8'));
       const eventName = payload?.meta?.event_name;
       const eventId = String(payload?.meta?.event_id || payload?.data?.id || '');
+      currentEventId = eventId;
 
       if (!eventName || !eventId) {
         res.status(400).json({ error: 'MALFORMED_WEBHOOK', message: 'Missing event metadata.' });
@@ -1121,13 +1146,13 @@ export function createApiRouter(): Router {
           }
 
           // Determine status transition
-          let newStatus: OutcomeFeeStatus = 'PAID';
+          let targetStatus: OutcomeFeeStatus = 'PAID';
           if (eventName === 'order_settled' || orderStatus === 'settled') {
-            newStatus = 'SETTLED';
+            targetStatus = 'SETTLED';
           } else if (orderStatus === 'paid') {
-            newStatus = 'PAID';
+            targetStatus = 'PAID';
           } else if (orderStatus === 'failed' || orderStatus === 'refunded') {
-            newStatus = 'FAILED';
+            targetStatus = 'FAILED';
           } else {
             // Pending or non-terminal status; record processed and ignore
             await storage.recordProcessedWebhook({
@@ -1138,6 +1163,18 @@ export function createApiRouter(): Router {
             });
             res.status(200).json({ status: 'IGNORED_NON_PAID', order_status: orderStatus });
             return;
+          }
+
+          // Monotonic State Machine Invariants:
+          // 1. SETTLED is terminal. Out-of-order order_created or failed events cannot regress SETTLED.
+          // 2. PAID can only transition forward to SETTLED. It cannot regress to FAILED, CHECKOUT_CREATED, or PAYABLE.
+          let newStatus = obligation.status;
+          if (obligation.status === 'SETTLED') {
+            newStatus = 'SETTLED';
+          } else if (obligation.status === 'PAID') {
+            newStatus = targetStatus === 'SETTLED' ? 'SETTLED' : 'PAID';
+          } else {
+            newStatus = targetStatus;
           }
 
           const now = new Date().toISOString();
@@ -1199,6 +1236,14 @@ export function createApiRouter(): Router {
 
       res.status(200).json({ status: 'IGNORED_EVENT', event_name: eventName });
     } catch (err) {
+      if (typeof currentEventId === 'string' && currentEventId) {
+        try {
+          const storage = getStorage();
+          storage.releaseWebhookClaim(currentEventId);
+        } catch {
+          // ignore release failure in error handler
+        }
+      }
       console.error('[API] Webhook error:', err);
       res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to process webhook.' });
     }

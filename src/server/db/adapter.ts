@@ -271,6 +271,10 @@ export class DrizzleStorageAdapter implements IStorage {
 
   // --- Authoritative Verification Operations ---
   async saveVerification(verification: AuthoritativeVerification): Promise<AuthoritativeVerification> {
+    const notesToSave = verification.original_estimated_annualized_usd && Number.isFinite(verification.original_estimated_annualized_usd)
+      ? `[EST:${verification.original_estimated_annualized_usd}] ${verification.verification_notes || ''}`.trim()
+      : (verification.verification_notes || null);
+
     await this.db
       .insert(schema.verifications)
       .values({
@@ -292,7 +296,7 @@ export class DrizzleStorageAdapter implements IStorage {
         observedReductionPct: verification.observed_reduction_pct,
         verifiedAnnualizedSavingsUsd: verification.verified_annualized_savings_usd,
         verificationConfidence: verification.verification_confidence,
-        verificationNotes: verification.verification_notes || null,
+        verificationNotes: notesToSave,
         postDeploymentFileName: verification.post_deployment_file_name || null,
         verifiedAt: verification.verified_at || null,
         createdAt: verification.created_at,
@@ -316,7 +320,7 @@ export class DrizzleStorageAdapter implements IStorage {
           observedReductionPct: verification.observed_reduction_pct,
           verifiedAnnualizedSavingsUsd: verification.verified_annualized_savings_usd,
           verificationConfidence: verification.verification_confidence,
-          verificationNotes: verification.verification_notes || null,
+          verificationNotes: notesToSave,
           postDeploymentFileName: verification.post_deployment_file_name || null,
           verifiedAt: verification.verified_at || null,
           updatedAt: verification.updated_at,
@@ -336,6 +340,19 @@ export class DrizzleStorageAdapter implements IStorage {
     if (!rows[0]) return null;
     const r = rows[0];
 
+    let originalEstimate: number | undefined;
+    let cleanNotes = r.verificationNotes || undefined;
+    if (cleanNotes) {
+      const match = cleanNotes.match(/^\[EST:([0-9.]+)\]\s*(.*)$/);
+      if (match) {
+        const parsed = parseFloat(match[1]);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          originalEstimate = parsed;
+        }
+        cleanNotes = match[2] || undefined;
+      }
+    }
+
     return {
       id: r.id,
       finding_id: r.findingId,
@@ -354,8 +371,9 @@ export class DrizzleStorageAdapter implements IStorage {
       post_avg_cost_usd: r.postAvgCostUsd,
       observed_reduction_pct: r.observedReductionPct,
       verified_annualized_savings_usd: r.verifiedAnnualizedSavingsUsd,
+      original_estimated_annualized_usd: originalEstimate,
       verification_confidence: r.verificationConfidence as any,
-      verification_notes: r.verificationNotes || undefined,
+      verification_notes: cleanNotes,
       post_deployment_file_name: r.postDeploymentFileName || undefined,
       verified_at: r.verifiedAt || undefined,
       created_at: r.createdAt,
