@@ -75,6 +75,7 @@ export const verifications = sqliteTable('verifications', {
   postAvgCostUsd: real('post_avg_cost_usd').notNull().default(0),
   observedReductionPct: real('observed_reduction_pct').notNull().default(0),
   verifiedAnnualizedSavingsUsd: real('verified_annualized_savings_usd').notNull().default(0),
+  originalEstimatedAnnualizedUsd: real('original_estimated_annualized_usd'),
   verificationConfidence: text('verification_confidence').notNull().default('INSUFFICIENT_OBSERVATION'),
   verificationNotes: text('verification_notes'),
   postDeploymentFileName: text('post_deployment_file_name'),

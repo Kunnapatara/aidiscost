@@ -1527,5 +1527,131 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
         try { fs.unlinkSync(sqlitePath); } catch {}
       }
     });
+
+    test('Case 55: Typed database column original_estimated_annualized_usd is persisted and retrieved cleanly without notes encoding', async () => {
+      const sqlitePath = 'data/test-drizzle-column-test.db';
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+
+      const prevEnv = process.env.TURSO_DATABASE_URL;
+      process.env.TURSO_DATABASE_URL = `file:${sqlitePath}`;
+      await runDatabaseMigrations();
+
+      const { db, client } = createDatabaseConnection({ url: `file:${sqlitePath}` });
+      const drizzleAdapter = new DrizzleStorageAdapter(db, client);
+
+      const findingId = 'fnd_column_test_01';
+      await drizzleAdapter.createUser({
+        id: 'usr_col_01',
+        email: 'usrcol@aidiscost.com',
+        password_hash: 'hash_test_123',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      await drizzleAdapter.registerFindingOwnership(findingId, 'usr_col_01');
+
+      const testNotes = 'Human readable audit observation notes only.';
+      const authRecord: AuthoritativeVerification = {
+        id: 'ver_col_01',
+        finding_id: findingId,
+        user_id: 'usr_col_01',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 12000.0,
+        original_estimated_annualized_usd: 15000.0,
+        verification_confidence: 'HIGH',
+        verification_notes: testNotes,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await drizzleAdapter.saveVerification(authRecord);
+
+      const retrieved = await drizzleAdapter.getVerificationByFindingId(findingId);
+      assert.ok(retrieved);
+      // Value must be accurately retrieved from real column
+      assert.strictEqual(retrieved.original_estimated_annualized_usd, 15000.0);
+      // Notes must remain pure human-readable text without [EST:...] prefixes
+      assert.strictEqual(retrieved.verification_notes, testNotes);
+
+      client.close();
+      if (prevEnv) {
+        process.env.TURSO_DATABASE_URL = prevEnv;
+      } else {
+        delete process.env.TURSO_DATABASE_URL;
+      }
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+    });
+
+    test('Case 56: Migration 0003 safely upgrades existing database with prior migrations 0000, 0001, 0002', async () => {
+      const sqlitePath = 'data/test-migration-0003-upgrade.db';
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+
+      const prevEnv = process.env.TURSO_DATABASE_URL;
+      process.env.TURSO_DATABASE_URL = `file:${sqlitePath}`;
+      
+      // Applying all versioned migrations (including 0003) must succeed with exit code 0
+      await runDatabaseMigrations();
+
+      const { db, client } = createDatabaseConnection({ url: `file:${sqlitePath}` });
+      // Verify that table structure includes original_estimated_annualized_usd
+      const testFindingId = 'fnd_mig_03_test';
+      const drizzleAdapter = new DrizzleStorageAdapter(db, client);
+      await drizzleAdapter.createUser({
+        id: 'usr_mig_03',
+        email: 'mig03@aidiscost.com',
+        password_hash: 'hash_test_123',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      await drizzleAdapter.registerFindingOwnership(testFindingId, 'usr_mig_03');
+
+      await drizzleAdapter.saveVerification({
+        id: 'ver_mig_03',
+        finding_id: testFindingId,
+        user_id: 'usr_mig_03',
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 6000.0,
+        original_estimated_annualized_usd: 7200.0,
+        verification_confidence: 'HIGH',
+        verification_notes: 'Migration 0003 verified column',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      const ver = await drizzleAdapter.getVerificationByFindingId(testFindingId);
+      assert.strictEqual(ver?.original_estimated_annualized_usd, 7200.0);
+
+      client.close();
+      if (prevEnv) {
+        process.env.TURSO_DATABASE_URL = prevEnv;
+      } else {
+        delete process.env.TURSO_DATABASE_URL;
+      }
+      if (fs.existsSync(sqlitePath)) {
+        try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+    });
   });
 });

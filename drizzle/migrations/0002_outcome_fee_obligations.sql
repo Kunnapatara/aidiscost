@@ -20,5 +20,5 @@ CREATE TABLE `outcome_fee_obligations` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `idx_outcome_fee_user_finding` ON `outcome_fee_obligations` (`user_id`,`finding_id`);--> statement-breakpoint
-CREATE UNIQUE INDEX `idx_outcome_fee_finding_id` ON `outcome_fee_obligations` (`finding_id`);--> statement-breakpoint
+CREATE INDEX `idx_outcome_fee_finding_id` ON `outcome_fee_obligations` (`finding_id`);--> statement-breakpoint
 CREATE INDEX `idx_outcome_fee_user_id` ON `outcome_fee_obligations` (`user_id`);

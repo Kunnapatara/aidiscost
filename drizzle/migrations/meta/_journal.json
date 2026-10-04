@@ -22,6 +22,13 @@
       "when": 1790800000000,
       "tag": "0002_outcome_fee_obligations",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790850000000,
+      "tag": "0003_authoritative_outcome_fee_hardening",
+      "breakpoints": true
     }
   ]
 }
