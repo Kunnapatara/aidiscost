@@ -356,7 +356,7 @@ export function createApiRouter(): Router {
         post_avg_cost_usd: 0,
         observed_reduction_pct: 0,
         verified_annualized_savings_usd: 0,
-        original_estimated_annualized_usd: existing?.original_estimated_annualized_usd || (typeof req.body?.annualized_projection_usd === 'number' && Number.isFinite(req.body.annualized_projection_usd) && req.body.annualized_projection_usd > 0 ? req.body.annualized_projection_usd : undefined),
+        original_estimated_annualized_usd: existing?.original_estimated_annualized_usd,
         verification_confidence: 'INSUFFICIENT_OBSERVATION',
         verification_notes: 'Remediation deployed. Observation window open for post-deployment production telemetry.',
         created_at: existing?.created_at || now,
@@ -479,9 +479,7 @@ export function createApiRouter(): Router {
         verified_annualized_savings_usd: verifiedAnnualSavings,
         original_estimated_annualized_usd: (typeof existing?.original_estimated_annualized_usd === 'number' && Number.isFinite(existing.original_estimated_annualized_usd) && existing.original_estimated_annualized_usd > 0)
           ? existing.original_estimated_annualized_usd
-          : (typeof finding?.annualized_projection_usd === 'number' && Number.isFinite(finding.annualized_projection_usd) && finding.annualized_projection_usd > 0
-              ? finding.annualized_projection_usd
-              : undefined),
+          : undefined,
         verification_confidence: evaluated.observed_result?.verification_confidence || 'INSUFFICIENT_OBSERVATION',
         verification_notes: evaluated.observed_result?.verification_notes,
         post_deployment_file_name: evaluated.post_deployment_file_name,
@@ -668,24 +666,11 @@ export function createApiRouter(): Router {
       }
 
       // 5. Canonical Outcome Fee calculation (20% rule, 1-month cap, 50% protection clause)
-      // Server-authoritative original estimate from persisted verification has absolute precedence.
-      // Client-provided values can never override or manipulate a persisted canonical estimate.
-      let originalEstimate = (typeof verification.original_estimated_annualized_usd === 'number' && Number.isFinite(verification.original_estimated_annualized_usd) && verification.original_estimated_annualized_usd > 0)
+      // Server-authoritative original estimate MUST come strictly from persisted verification.
+      // Client-provided values can never establish, override, or manipulate the estimate.
+      const originalEstimate = (typeof verification.original_estimated_annualized_usd === 'number' && Number.isFinite(verification.original_estimated_annualized_usd) && verification.original_estimated_annualized_usd > 0)
         ? verification.original_estimated_annualized_usd
         : undefined;
-
-      // If verification record does not have original estimate set yet, safely derive from valid finding and persist
-      if (originalEstimate === undefined) {
-        if (typeof req.body?.finding?.annualized_projection_usd === 'number' && Number.isFinite(req.body.finding.annualized_projection_usd) && req.body.finding.annualized_projection_usd > 0) {
-          originalEstimate = req.body.finding.annualized_projection_usd;
-          verification.original_estimated_annualized_usd = originalEstimate;
-          await storage.saveVerification(verification);
-        } else if (typeof req.body?.original_estimated_annualized_usd === 'number' && Number.isFinite(req.body.original_estimated_annualized_usd) && req.body.original_estimated_annualized_usd > 0) {
-          originalEstimate = req.body.original_estimated_annualized_usd;
-          verification.original_estimated_annualized_usd = originalEstimate;
-          await storage.saveVerification(verification);
-        }
-      }
 
       const feeCalc = calculateAuthoritativeVerificationFee(verification, originalEstimate);
       if (feeCalc.protectionTriggered || !feeCalc.isPayable || feeCalc.finalOutcomeFeeUsd <= 0) {

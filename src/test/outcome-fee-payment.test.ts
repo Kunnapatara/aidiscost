@@ -13,7 +13,7 @@ import { ServerStorage } from '../server/storage';
 import { hashPassword, authenticate } from '../server/auth';
 import { createApiRouter } from '../server/api';
 import { verifyLemonSqueezySignature } from '../server/lemon-squeezy';
-import { Finding, AuthoritativeVerification, OutcomeFeeObligation } from '../types/domain';
+import { Finding, AuthoritativeVerification, OutcomeFeeObligation, AIEvent } from '../types/domain';
 import {
   calculateOutcomeFee,
   calculateAuthoritativeVerificationFee,
@@ -142,6 +142,39 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
     return { rawBody, signature };
   }
 
+  // Helper to generate N post-deployment events for verification evaluation
+  function generatePostEvents(count: number, unitCost: number, isSimulated = false, model = 'gpt-4o-mini'): AIEvent[] {
+    const events: AIEvent[] = [];
+    const baseTime = new Date('2026-09-15T00:00:00.000Z').getTime();
+    for (let i = 0; i < count; i++) {
+      events.push({
+        id: `post_evt_${i}_${Date.now()}_${Math.random()}`,
+        source: 'custom_logs',
+        source_event_id: `src_post_${i}`,
+        timestamp: new Date(baseTime + i * 60000).toISOString(),
+        provider: 'openai',
+        model,
+        operation: 'chat',
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        latency_ms: 200,
+        status: 'SUCCESS',
+        trace_id: `tr_${i}`,
+        tool_calls: [],
+        metadata: {},
+        source_reported_cost_usd: unitCost,
+        calculated_cost_usd: unitCost,
+        resolved_cost_usd: unitCost,
+        cost_provenance: 'CALCULATED',
+        cost_confidence: 'HIGH',
+        quality_signal: 1.0,
+        is_simulated: isSimulated,
+      });
+    }
+    return events;
+  }
+
   // =========================================================================
   // 1. Authoritative Verification Gate Tests (Cases 1 - 5)
   // =========================================================================
@@ -239,6 +272,7 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
         post_avg_cost_usd: 0.3,
         observed_reduction_pct: 85.0,
         verified_annualized_savings_usd: 12000.0, // $1,000/mo verified
+        original_estimated_annualized_usd: 12000.0, // $1,000/mo server-authoritative baseline
         verification_confidence: 'HIGH',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -881,6 +915,7 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
         post_avg_cost_usd: 0.3,
         observed_reduction_pct: 85.0,
         verified_annualized_savings_usd: 6000.0,
+        original_estimated_annualized_usd: 6000.0,
         verification_confidence: 'HIGH',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -1651,6 +1686,241 @@ describe('AIDisCost Sprint B — Outcome Fee Payment Lifecycle & Trust Boundary 
       }
       if (fs.existsSync(sqlitePath)) {
         try { fs.unlinkSync(sqlitePath); } catch {}
+      }
+    });
+
+    test('Case 57: Direct API endpoint regression: malicious client cannot manipulate original baseline in evaluate or outcome-fee', async () => {
+      const findingSec = 'fnd_sec_regression_baseline_01';
+      await storage.registerFindingOwnership(findingSec, userA.id);
+
+      // 1. Establish a trusted server-side finding verification with original estimate X = 3,000.0
+      // ($250/mo baseline; verified savings of ~$215.45/mo achieves 86.2% realized ratio >= 50% protection threshold)
+      const trustedBaselineX = 3000.0;
+      const authRecord: AuthoritativeVerification = {
+        id: `ver_sec_${crypto.randomUUID()}`,
+        finding_id: findingSec,
+        user_id: userA.id,
+        stage: 'CUSTOMER_DEPLOYED',
+        is_authoritative: false,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        deployment_timestamp: '2026-09-10T00:00:00Z',
+        observation_sample_count: 0,
+        post_avg_cost_usd: 0,
+        observed_reduction_pct: 0,
+        verified_annualized_savings_usd: 0,
+        original_estimated_annualized_usd: trustedBaselineX,
+        verification_confidence: 'INSUFFICIENT_OBSERVATION',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.saveVerification(authRecord);
+
+      // 2. Send /verification/evaluate with malicious request-body finding containing Y = 1,000,000.0
+      const maliciousFindingY = {
+        ...mockFindingA,
+        id: findingSec,
+        annualized_projection_usd: 1_000_000.0,
+      };
+      const events = generatePostEvents(25, 0.3, false);
+
+      const evalRes = await fetch(`${serverUrl}/api/findings/${findingSec}/verification/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({
+          events,
+          finding: maliciousFindingY,
+        }),
+      });
+
+      assert.strictEqual(evalRes.status, 200);
+      const evalJson: any = await evalRes.json();
+      assert.strictEqual(evalJson.is_authoritative, true);
+
+      // 4. Verify persisted original_estimated_annualized_usd remains X (10,000.0)
+      const persistedVer = await storage.getVerificationByFindingId(findingSec);
+      assert.ok(persistedVer);
+      assert.strictEqual(persistedVer.original_estimated_annualized_usd, trustedBaselineX);
+      assert.strictEqual(evalJson.verification.original_estimated_annualized_usd, trustedBaselineX);
+
+      // 5. Call /outcome-fee with another malicious client baseline in body
+      const feeRes = await fetch(`${serverUrl}/api/findings/${findingSec}/outcome-fee`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: userA.cookie },
+        body: JSON.stringify({
+          original_estimated_annualized_usd: 999_999.0,
+          fee_amount_usd: 1.0,
+          finding: {
+            ...maliciousFindingY,
+            annualized_projection_usd: 5_000_000.0,
+          },
+        }),
+      });
+
+      assert.strictEqual(feeRes.status, 201);
+      const feeJson: any = await feeRes.json();
+      assert.strictEqual(feeJson.success, true);
+
+      // 6. Verify payable amount is still calculated from X (trustedBaselineX = 10,000.0)
+      const expectedMonthly = evalJson.verified_annualized_savings_usd / 12;
+      const expectedCap = Number(expectedMonthly.toFixed(2));
+      const expectedRaw = Number((evalJson.verified_annualized_savings_usd * 0.20).toFixed(2));
+      const expectedFee = Math.min(expectedRaw, expectedCap);
+      assert.strictEqual(feeJson.obligation.fee_amount_usd, expectedFee);
+
+      // 7. Verify client values did not mutate authoritative verification state
+      const finalVer = await storage.getVerificationByFindingId(findingSec);
+      assert.strictEqual(finalVer?.original_estimated_annualized_usd, trustedBaselineX);
+    });
+
+    test('Case 58: Webhook HTTP handler failure & retry lifecycle: transient error releases in-flight claim so provider retry succeeds and persists exactly once', async () => {
+      const retryFindingId = 'fnd_webhook_handler_retry_01';
+      await storage.registerFindingOwnership(retryFindingId, userA.id);
+
+      // Create authoritative verification
+      const authRecord: AuthoritativeVerification = {
+        id: `ver_retry_${crypto.randomUUID()}`,
+        finding_id: retryFindingId,
+        user_id: userA.id,
+        stage: 'VERIFIED_RESULT',
+        is_authoritative: true,
+        is_simulated: false,
+        baseline_start: '2026-09-01T00:00:00Z',
+        baseline_end: '2026-09-10T00:00:00Z',
+        baseline_sample_count: 50,
+        baseline_avg_cost_usd: 2.0,
+        observation_sample_count: 30,
+        post_avg_cost_usd: 0.3,
+        observed_reduction_pct: 85.0,
+        verified_annualized_savings_usd: 12000.0,
+        original_estimated_annualized_usd: 12000.0,
+        verification_confidence: 'HIGH',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await storage.saveVerification(authRecord);
+
+      // Create payable obligation
+      const obligation = await storage.createOutcomeFeeObligation({
+        id: `of_retry_${crypto.randomUUID()}`,
+        user_id: userA.id,
+        finding_id: retryFindingId,
+        verification_id: authRecord.id,
+        verified_annualized_savings_usd: 12000.0,
+        fee_amount_usd: 1000.0,
+        currency: 'USD',
+        status: 'PAYABLE',
+        provider: 'LEMON_SQUEEZY',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      const retryEventId = `evt_handler_retry_${Date.now()}`;
+      const webhookPayload = {
+        meta: {
+          event_name: 'order_created',
+          event_id: retryEventId,
+          custom_data: {
+            user_id: userA.id,
+            finding_id: retryFindingId,
+            obligation_id: obligation.id,
+            product: 'OUTCOME_FEE',
+          },
+        },
+        data: {
+          id: 'ord_retry_ls_001',
+          type: 'orders',
+          attributes: {
+            status: 'paid',
+            total: 100000,
+            variant_id: TEST_OUTCOME_FEE_VARIANT_ID,
+          },
+        },
+      };
+
+      const signed = buildSignedWebhook(webhookPayload);
+
+      // Simulate a transient error during storage transaction processing on attempt 1
+      const origTx = storage.processOutcomeFeeWebhookTransaction?.bind(storage);
+      const origUpdate = storage.updateOutcomeFeeObligation.bind(storage);
+      let failOnce = true;
+      if (origTx) {
+        storage.processOutcomeFeeWebhookTransaction = async (params) => {
+          if (failOnce) {
+            failOnce = false;
+            throw new Error('Database connection transient timeout');
+          }
+          return origTx(params);
+        };
+      } else {
+        storage.updateOutcomeFeeObligation = async (obl) => {
+          if (failOnce) {
+            failOnce = false;
+            throw new Error('Database connection transient timeout');
+          }
+          return origUpdate(obl);
+        };
+      }
+
+      try {
+        // Attempt 1: Handler hits transient failure -> releases in-flight claim -> returns 500
+        const attempt1Res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Signature': signed.signature,
+          },
+          body: signed.rawBody,
+        });
+
+        assert.strictEqual(attempt1Res.status, 500);
+        const attempt1Json: any = await attempt1Res.json();
+        assert.strictEqual(attempt1Json.error, 'INTERNAL_ERROR');
+
+        // Obligation must remain in PAYABLE state
+        const oblAfterFail = await storage.getOutcomeFeeObligation(retryFindingId);
+        assert.strictEqual(oblAfterFail?.status, 'PAYABLE');
+
+        // Attempt 2: Lemon Squeezy provider retries with exact same payload & signature
+        const attempt2Res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Signature': signed.signature,
+          },
+          body: signed.rawBody,
+        });
+
+        assert.strictEqual(attempt2Res.status, 200);
+        const attempt2Json: any = await attempt2Res.json();
+        assert.strictEqual(attempt2Json.status, 'SUCCESS');
+        assert.strictEqual(attempt2Json.outcome_fee_status, 'PAID');
+
+        // Obligation must now be PAID
+        const oblAfterSuccess = await storage.getOutcomeFeeObligation(retryFindingId);
+        assert.strictEqual(oblAfterSuccess?.status, 'PAID');
+
+        // Attempt 3: Idempotent replay of same event returns IDEMPOTENT_DUPLICATE
+        const attempt3Res = await fetch(`${serverUrl}/api/webhooks/lemon-squeezy`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Signature': signed.signature,
+          },
+          body: signed.rawBody,
+        });
+
+        assert.strictEqual(attempt3Res.status, 200);
+        const attempt3Json: any = await attempt3Res.json();
+        assert.strictEqual(attempt3Json.status, 'IDEMPOTENT_DUPLICATE');
+      } finally {
+        if (origTx) {
+          storage.processOutcomeFeeWebhookTransaction = origTx;
+        }
+        storage.updateOutcomeFeeObligation = origUpdate;
       }
     });
   });
